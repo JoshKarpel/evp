@@ -8,7 +8,8 @@ as [waxy](https://github.com/JoshKarpel/waxy) is counterweight's binding to taff
 It covers why, what the binding's API returns, which language it's written in, how it's built and released,
 and how `counterweight.emulator` moves onto it.
 It doesn't change counterweight's `Emulator` or `Screen`, the API the rest of counterweight and its users see,
-and it doesn't cover the kitty keyboard protocol or anything else counterweight's emulator doesn't do today.
+and it doesn't move counterweight onto the kitty keyboard protocol or anything else its emulator doesn't do today,
+though evp's first release binds more of libghostty-vt than counterweight uses.
 The name is a pun: EVP, electronic voice phenomena,
 are the voices ghost hunters claim to record, and evp is how Python hears from Ghostty.
 counterweight's copy of this plan is [plans/ghostty-binding.md](https://github.com/JoshKarpel/counterweight/blob/43ad2e1477994716b3254626f245af42407944f4/plans/ghostty-binding.md).
@@ -143,18 +144,30 @@ and kitty graphics (`kitty_graphics.h`), which counterweight's [#441](https://gi
 **The screen helpers are what replaces `emulator.py`'s cffi loops:**
 
 - **`frame()` returns `Row` values, and an unchanged row is the same object.**
-  evp keeps each row it read by libghostty's row id while the row isn't dirty,
-  and hands back the same `Row` for it, so a consumer that keeps derived data by row
-  (`Emulator` shares unchanged rows by identity) skips them for free.
+  evp keeps each row it read by libghostty's row id, and hands back the same `Row` for it while the row is unchanged,
+  so a consumer that keeps derived data by row (`Emulator` shares unchanged rows by identity) skips them for free.
+  The dirty flag alone can't say "unchanged", since a scroll marks every row dirty,
+  and the scroll is the case this plan exists to make fast.
+  If a row's id follows its content through a scroll, `frame()` also reuses a dirty row's `Row`
+  when its raw cells match the cached ones, so a scroll converts only the rows that are new;
+  the spike finds out whether it does.
 - **A row's cells come back as parallel sequences**, its grapheme clusters as `str`s, their widths, and their style indices,
   so a row of 120 cells is a handful of objects, not 120.
-- **Styles are indices into the terminal's style table**, with each frame carrying the styles added since the last.
+- **Styles are indices into the terminal's style table**, with each frame and each `scrolled_off()` result
+  carrying the styles added since the last of either, so a style always arrives no later than the first row that uses it.
   libghostty's style ids mean something only within a page, so the helper interns styles itself, terminal-wide,
   and a consumer converts each style once, by index.
 - **`scrolled_off()` returns the rows that scrolled into the scrollback since the last call**, captured natively,
   so the doubling search `emulator.py` does to keep capturing affordable moves into evp.
-- **libghostty allows one render state per terminal in effect**: a second takes the first's dirty flags.
-  evp documents it, as the C API does, rather than hiding it.
+  Its result's `has_gap` is true when rows were lost since the last call:
+  more scrolled off than the scrollback holds, the program cleared the scrollback (`ESC[3J`), or a resize reflowed it.
+  A consumer keeping its own history then knows to mark the gap or rebuild.
+  It's a flag, not an exception, because a gap is the program's doing, not a mistake by evp's caller.
+- **A terminal has at most one `RenderState`.**
+  libghostty lets a second render state take the first's dirty flags,
+  which would make `frame()` hand back cached rows whose content changed.
+  So making a second `RenderState` for a terminal raises while the first is alive:
+  that's a mistake by the caller, so evp refuses it rather than documenting it.
 
 **What stays in counterweight** is what depends on counterweight: matching libghostty's columns to counterweight's own
 `grapheme_width` (see "The screen painter" in [canvas-and-embedding](https://github.com/JoshKarpel/counterweight/blob/43ad2e1477994716b3254626f245af42407944f4/plans/canvas-and-embedding.md)),
@@ -203,10 +216,15 @@ It's waxy's toolchain and release flow, and most of what a general binding needs
 
 The build logic alone wouldn't be worth a dependency; evp could carry its own in about 800 lines.
 The safe API is what's worth it: evp's low layer becomes PyO3 classes over safe Rust types,
-with no `unsafe` of its own, so raw pointer mistakes like `convert_row`'s overrun can't happen in it,
+with no `unsafe` of its own beyond direct calls into `libghostty-vt-sys` for what the safe API doesn't wrap yet
+(in 0.2.2, `size_report.h`'s encoder, which the first release lists),
+so raw pointer mistakes like `convert_row`'s overrun can't happen outside those calls,
 and a fast helper's loop runs over the same safe types, at native speed.
-It already exposes what the screen helpers need: overscan, `next_dirty`, a row's `id`, `dirty` and `viewport_y`,
+Its `master` exposes what the screen helpers need: overscan, `next_dirty`, a row's `id`, `dirty` and `viewport_y`,
 `cells_raw`, and a cell's `style` and `graphemes`.
+The newest release, 0.2.2, has only a row's `dirty` and a cell's `style` and `graphemes`,
+so evp builds on a git pin of `master` (and its Zig 0.17) until libghostty-rs's next release,
+and evp's first release waits for that one rather than releasing on the git pin.
 What this costs: two toolchains to build evp (Rust and Zig),
 dependence on libghostty-rs's cadence for new Ghostty commits and for wrapping new C APIs
 (or overriding its source with `GHOSTTY_SOURCE_DIR`, and calling `libghostty-vt-sys` directly for what isn't wrapped yet),
@@ -248,20 +266,28 @@ Revisit pydust if it supports Ghostty's Zig version; evp's Python API wouldn't c
 The same scaffolding as [waxy](https://github.com/JoshKarpel/waxy), copied and then adjusted for Zig and Ghostty.
 What evp adds is mostly Zig on every runner that compiles, and a cache for Ghostty's build.
 
+- **Every tool comes from `mise.toml`**, locally and in CI alike: Rust (with clippy and rustfmt), Zig, just and uv,
+  with Python's dev tools (ruff, mypy, maturin, pre-commit) in uv's dev group.
+  Every workflow job that runs a tool installs them with [`jdx/mise-action`](https://github.com/jdx/mise-action),
+  with mise itself pinned by the action's `version` input,
+  so CI runs the versions a contributor runs, and a version bump is one reviewable change to `mise.toml`.
+  That's a departure from waxy, whose CI installs Rust, just and uv with separate actions.
 - **CI** (`.github/workflows/ci.yml`): on pushes to `main`, pull requests, and by hand.
-  A matrix of Linux, macOS and Windows by each supported Python installs Rust
-  (with clippy, rustfmt, and `-D warnings`), just and uv,
-  then runs `just fix` (pre-commit over every file) and `just test` (mypy, pytest, and `cargo test`).
-  evp adds Zig to each cell with [`jdx/mise-action`](https://github.com/jdx/mise-action), and caches Cargo's target directory,
-  since every cell otherwise builds Ghostty from a clean clone;
+  A matrix of Linux, macOS and Windows by each supported Python
+  runs `just fix` (pre-commit over every file) and `just test` (mypy, pytest, and `cargo test`, with `-D warnings`),
+  and caches Cargo's target directory, since every cell otherwise builds Ghostty from a clean clone;
   the spike's measurement of that build says how much the cache matters.
 - **Release** (`.github/workflows/release.yml`): on a published GitHub release,
   builds a wheel per platform (and per Python, unless `abi3` wins) with `PyO3/maturin-action`, and an sdist,
   then publishes them with `pypa/gh-action-pypi-publish` through
   [trusted publishing](https://docs.pypi.org/trusted-publishers/):
-  the workflow grants `id-token: write`, the publish job runs in a `pypi` environment, and no API token exists.
+  only the publish job grants `id-token: write`, it runs in a `pypi` environment, and no API token exists.
   evp also needs a pending publisher on PyPI for `evp` (this repository, `release.yml`, the `pypi` environment)
-  before the first release, which also reserves the name, and Zig wherever maturin-action compiles (see below).
+  before the first release.
+  On macOS and Windows maturin-action builds on the runner, so `mise-action` ahead of it puts Zig on `PATH`;
+  on Linux it builds in a container, which needs mise of its own (see below).
+  A pending publisher doesn't reserve the name: if anyone else uploads `evp` first, PyPI discards it,
+  so step 2's pre-release follows the pending publisher closely.
 - **Linux wheels build in maturin-action's manylinux container**, unlike waxy's.
   maturin-action (v1) builds on the runner itself unless it's given `manylinux`, `container`, or a cross `target`,
   and waxy gives none, so its Linux wheels are tagged `manylinux_2_34`: they need glibc 2.34 or newer.
@@ -274,13 +300,14 @@ What evp adds is mostly Zig on every runner that compiles, and a cache for Ghost
   `before-script-linux` runs in the same shell as `maturin build`, so it installs mise and runs `mise install` from the repository's `mise.toml`:
 
   ```bash
-  curl -fsSL https://mise.run | MISE_INSTALL_MUSL=1 sh
+  curl -fsSL https://mise.run | MISE_VERSION=v2026.10.4 MISE_INSTALL_MUSL=1 sh
   export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"
   mise trust
   mise install
   ```
 
   `MISE_INSTALL_MUSL=1` matters: mise's default Linux build needs glibc 2.18, and `manylinux2014` has 2.17.
+  `MISE_VERSION` pins mise itself, which the installer otherwise takes from whatever was released last, outside any cooldown.
 - **Docs** (`.github/workflows/docs.yml`): builds the extension and an mkdocs site with `--strict`,
   and deploys it to GitHub Pages on pushes to `main`.
 - **Dependabot** for GitHub Actions, weekly.
@@ -301,12 +328,14 @@ one here and one there, with a release of evp between them.
 
 Steps 1 to 3 happen in this repository; steps 4 and 5 in counterweight.
 
-1. **Spike** (decides the open question below):
-   a PyO3 module on `libghostty-vt` with `Terminal.feed` and a bulk `snapshot`,
+1. **Spike** (decides the open questions below):
+   a PyO3 module on `libghostty-vt` from a git pin of libghostty-rs's `master`, with `Terminal.feed` and a bulk `snapshot`,
    built on Linux, macOS and Windows by the CI workflow (see [What does the repository need?](#what-does-the-repository-need)).
    Measure import plus the first terminal (target: a few milliseconds, against 190 ms),
    counterweight's `benchmarks snapshot` scenarios against today's,
    `abi3` against a per-version build, and how long a clean build of Ghostty takes in CI, with and without the cache.
+   Find out whether a row's id follows its content through a scroll, and through a rewrite of the row in place
+   (see [The binding's API](#the-bindings-api)).
    Check whether `libghostty-vt-sys` cross-compiles to the wheel targets,
    and whether pydust supports Zig 0.17 by then.
 2. **The rest of the scaffolding**: the release and docs workflows, Dependabot, pre-commit and the justfile,
@@ -325,11 +354,15 @@ Steps 1 to 3 happen in this repository; steps 4 and 5 in counterweight.
 
 ## Open decisions
 
-- **Language**: Rust (recommended) or Zig with pydust, settled by the spike.
+- **Language**: Rust (recommended), unless the spike finds pydust supporting Zig 0.17; the spike builds only the Rust path.
+- **`abi3` or a wheel per Python**, by the spike's snapshot measurement both ways.
+- **Cross-compiling or a native runner per wheel target**, by whether `libghostty-vt-sys` cross-compiles.
 
 ## Risks
 
 - **libghostty-vt's C API is pre-1.0**, so new Ghostty commits can change it; the pin is what contains that.
+- **evp's first release waits on libghostty-rs's next one**, which has no date;
+  the spike and step 3's work run on a git pin of `master`, but evp doesn't release on one.
 - **libghostty-rs has two main contributors.** It's licensed MIT or Apache-2.0, so if it stalls, evp can fork it
   and keep it current with Ghostty's C API itself: about 20,000 lines to own, so the risk is work, not a dead end.
 - **Ghostty's build time in CI is unmeasured**; the spike measures it.
