@@ -116,9 +116,9 @@ while rows.next():
     while cells.next():
         cells.graphemes(), cells.style()
 
-# A fast helper: every dirty row, each read in one native call, as values.
+# A fast helper: every row, each changed one read in one native call, as values.
 frame = state.frame()  # the cursor, colors, styles added since the last frame, and the rows
-for row in frame.dirty_rows:
+for row in frame.rows:  # a row unchanged since the last frame is the same object
     row.graphemes, row.widths, row.styles
 
 keys = KeyEncoder(terminal)  # encodes as the terminal's modes say
@@ -148,11 +148,18 @@ and kitty graphics (`kitty_graphics.h`), which counterweight's [#441](https://gi
   so a consumer that keeps derived data by row (`Emulator` shares unchanged rows by identity) skips them for free.
   The dirty flag alone can't say "unchanged", since a scroll marks every row dirty,
   and the scroll is the case this plan exists to make fast.
-  If a row's id follows its content through a scroll, `frame()` also reuses a dirty row's `Row`
-  when its raw cells match the cached ones, so a scroll converts only the rows that are new;
-  the spike finds out whether it does.
+  A row's id follows its content through a scroll, with or without scrollback, and through a rewrite in place,
+  so `frame()` also reuses a dirty row's `Row` when its raw cells match the ones it read,
+  and a scroll reads only the rows that are new.
+  Equal raw cells aren't enough on their own, and the spike's tests reproduce both of these:
+  libghostty reuses a freed style id within a page, so `frame()` reads each of the row's style ids' styles again,
+  and a cell's codepoints after its first live outside its raw value,
+  so a row holding a multi-codepoint grapheme cluster is always read again.
+  A scroll region gives every row on its page a new id, rows outside the region included,
+  so a program that scrolls a region has every row read again.
 - **A row's cells come back as parallel sequences**, its grapheme clusters as `str`s, their widths, and their style indices,
-  so a row of 120 cells is a handful of objects, not 120.
+  one entry per column, so a row of 120 cells is a handful of objects, not 120.
+  A wide character's second column is an empty grapheme of width 0.
 - **Styles are indices into the terminal's style table**, with each frame and each `scrolled_off()` result
   carrying the styles added since the last of either, so a style always arrives no later than the first row that uses it.
   libghostty's style ids mean something only within a page, so the helper interns styles itself, terminal-wide,
@@ -223,7 +230,8 @@ and a fast helper's loop runs over the same safe types, at native speed.
 Its `master` exposes what the screen helpers need: overscan, `next_dirty`, a row's `id`, `dirty` and `viewport_y`,
 `cells_raw`, and a cell's `style` and `graphemes`.
 The newest release, 0.2.2, has only a row's `dirty` and a cell's `style` and `graphemes`,
-so evp builds on a git pin of `master` (and its Zig 0.17) until libghostty-rs's next release,
+so evp builds on a git pin of `master` until libghostty-rs's next release,
+at the newest commit outside the cooldown (`d2036ba`, from 2026-10-09, whose Ghostty needs Zig 0.16),
 and evp's first release waits for that one rather than releasing on the git pin.
 What this costs: two toolchains to build evp (Rust and Zig),
 dependence on libghostty-rs's cadence for new Ghostty commits and for wrapping new C APIs
@@ -237,20 +245,28 @@ Revisit pydust if it supports Ghostty's Zig version; evp's Python API wouldn't c
   from `PyO3/maturin-action`.
   waxy builds only on each runner's native architecture (x86_64 Linux and Windows, arm64 macOS),
   so aarch64 Linux and x86_64 macOS are targets waxy doesn't have.
-  Each needs Ghostty built for that target, so the spike checks whether `libghostty-vt-sys`
-  cross-compiles (Zig itself cross-compiles readily) or each target wants a native runner.
+  Each needs Ghostty built for that target.
+  `libghostty-vt-sys` cross-compiles: maturin with `--zig` builds an aarch64 Linux wheel on an x86_64 host,
+  tagged `manylinux_2_17`, in about 3 minutes 50 seconds cold.
+  But a cross-built wheel can't be tested where it's built, and GitHub has a native runner for every target
+  (`ubuntu-24.04-arm`, `macos-15-intel`), so each target builds and tests on its own runner,
+  and cross-compiling is the way out if a runner goes away.
   counterweight runs only on Linux and macOS (it uses `pty` and `termios`), but evp only feeds bytes
   and reads the screen, so it's useful on Windows too, as waxy is.
   libghostty-rs builds and tests `libghostty-vt` for Windows x86_64 (MSVC and GNU) in CI on every push to `master`,
   so Windows costs one more build target. Windows on ARM waits until libghostty-rs tests it.
-- **One wheel per platform, if the limited API is fast enough.**
+- **One wheel per platform, through the limited API.**
   PyO3's `abi3` feature builds one wheel for every Python from the oldest it names;
   waxy instead builds one per Python version.
-  The limited API can be slower for some operations, so the spike measures a snapshot both ways before choosing.
+  Built with `abi3`, `frame()` takes 7 to 22% longer (0.1 to 2.6 µs a frame),
+  and the counterweight prototype 1 to 7% longer, since its own Python work dominates.
+  That buys one wheel per platform instead of three, and wheels for Pythons not yet released.
+  What it costs: those microseconds, and no wheel for free-threaded CPython, which can't load an `abi3` wheel.
 - **Zig wherever evp is built**, from mise, pinned in `mise.toml`,
   at the version the Ghostty commit pinned by libghostty-rs requires.
   That's 0.15.2 for `libghostty-vt` 0.2.2, the newest release (its Ghostty is `a887df42`),
-  and 0.17.0 for libghostty-rs's unreleased `master`, so a libghostty-rs bump can bring a Zig bump with it.
+  0.16.0 for the `master` commit evp pins, and 0.17.0 for `master` since 2026-10-23,
+  so a libghostty-rs bump can bring a Zig bump with it.
   `libghostty-vt-sys` runs `zig` from `PATH` unless its `ZIG` variable names another.
   evp has no Zig of its own and no Ghostty build logic, but `libghostty-vt-sys` has no prebuilt library:
   its `build.rs` clones Ghostty at its pinned commit and runs `zig build` (or builds a local checkout named by `GHOSTTY_SOURCE_DIR`).
@@ -352,11 +368,43 @@ Steps 1 to 3 happen in this repository; steps 4 and 5 in counterweight.
    `emulator.py`'s module docstring, and the emulator notes in
    [canvas-and-embedding](https://github.com/JoshKarpel/counterweight/blob/43ad2e1477994716b3254626f245af42407944f4/plans/canvas-and-embedding.md).
 
-## Open decisions
+## What did the spike find?
 
-- **Language**: Rust (recommended), unless the spike finds pydust supporting Zig 0.17; the spike builds only the Rust path.
-- **`abi3` or a wheel per Python**, by the spike's snapshot measurement both ways.
-- **Cross-compiling or a native runner per wheel target**, by whether `libghostty-vt-sys` cross-compiles.
+The spike is a PyO3 module on the pinned `libghostty-vt` with `Terminal` (`feed`, `resize`, modes, title, colors)
+and `RenderState.frame()`, the screen helper described above, without overscan or `scrolled_off()`.
+`spike/emulator.py` is counterweight's `Emulator.snapshot` rebuilt on it, reusing counterweight's own conversions,
+and `spike/bench.py` checks that it returns the same rows, cursor and modes as counterweight's `Emulator`
+after every scenario of counterweight's `benchmarks snapshot`, then times both the way that benchmark does.
+Best times per snapshot of a 120×40 screen, on a 2-core VM, with a per-version build:
+
+| After | pyghostty µs | evp prototype µs | evp `frame()` alone µs |
+| --- | --- | --- | --- |
+| nothing | 65 | 10 | 1.5 |
+| a progress bar rewriting its row | 75 | 10 | 1.7 |
+| a plain line, scrolling | 445 | 51 | 11 |
+| a line of wide characters, scrolling | 522 | 48 | 12 |
+| a line with every word colored, scrolling | 3,637 | 73 | 29 |
+
+The colored scroll falls fiftyfold because `frame()` reuses the rows that only moved,
+and converts each style once rather than once per row.
+What remains of the prototype's time is Python: a dict lookup per row, and `cells_for` for the new row's cells.
+
+Startup, the best of seven fresh processes:
+importing evp takes 0.4 ms, and a terminal with its render state another 0.03 ms.
+Making counterweight's first `Emulator` takes 173 ms, the cffi parsing [Why own the binding?](#why-own-the-binding) traces.
+
+The cross-compile check and the measurement of `abi3` are under [How is it built and released?](#how-is-it-built-and-released).
+ziggy-pydust still supports only Zig 0.15 on its default branch, with no release since September 2025,
+and only dependency-bot commits since May 2026.
+
+The CI workflow builds and tests on Linux (x86_64 and arm64), macOS (arm64 and x86_64) and Windows,
+for Python 3.13 to 3.15, but hasn't run yet, so Ghostty's build time in CI, with and without the cache, is still unmeasured.
+
+## Decisions
+
+- **Language: Rust**, on libghostty-rs. ziggy-pydust doesn't support Ghostty's Zig.
+- **`abi3`**: one wheel per platform, for a few microseconds a frame.
+- **A native runner per wheel target**, since `libghostty-vt-sys` cross-compiles but a cross-built wheel goes untested.
 
 ## Risks
 
@@ -365,5 +413,5 @@ Steps 1 to 3 happen in this repository; steps 4 and 5 in counterweight.
   the spike and step 3's work run on a git pin of `master`, but evp doesn't release on one.
 - **libghostty-rs has two main contributors.** It's licensed MIT or Apache-2.0, so if it stalls, evp can fork it
   and keep it current with Ghostty's C API itself: about 20,000 lines to own, so the risk is work, not a dead end.
-- **Ghostty's build time in CI is unmeasured**; the spike measures it.
-  Locally, a cold release build of the spike crate, Ghostty included, takes about two and a half minutes on a 2-core VM.
+- **Ghostty's build time in CI is unmeasured** until CI first runs.
+  Locally, a cold build of the pinned Ghostty takes 2 minutes 24 seconds and 800 MB on a 2-core VM.
