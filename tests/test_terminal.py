@@ -12,7 +12,8 @@ def test_feed_sends_replies_to_on_write_pty() -> None:
 
 def test_feed_raises_what_on_write_pty_raised() -> None:
     def fail(_: bytes) -> None:
-        raise ValueError("no pty")
+        msg = "no pty"
+        raise ValueError(msg)
 
     terminal = Terminal(20, 5, on_write_pty=fail)
     with pytest.raises(ValueError, match="no pty"):
@@ -25,7 +26,8 @@ def test_feed_raises_nothing_after_a_failed_feed() -> None:
     def fail_once(data: bytes) -> None:
         calls.append(data)
         if len(calls) == 1:
-            raise ValueError("no pty")
+            msg = "no pty"
+            raise ValueError(msg)
 
     terminal = Terminal(20, 5, on_write_pty=fail_once)
     with pytest.raises(ValueError, match="no pty"):
@@ -94,7 +96,8 @@ def test_on_clipboard_write_receives_the_decoded_contents() -> None:
 
 def test_a_raising_callback_raises_from_feed() -> None:
     def fail(_: str) -> None:
-        raise KeyError("no title")
+        msg = "no title"
+        raise KeyError(msg)
 
     terminal = Terminal(20, 5, on_title_changed=fail)
     with pytest.raises(KeyError, match="no title"):

@@ -190,7 +190,10 @@ impl MouseEncoder {
                     .transpose()?,
             )
             .set_mods(Mods::from_bits_retain(mods))
-            .set_position(mouse::Position { x, y });
+            .set_position(mouse::Position {
+                x: position("x", x, self.cell_size.0)?,
+                y: position("y", y, self.cell_size.1)?,
+            });
         let mut encoded = Vec::new();
         self.encoder
             .0
@@ -202,6 +205,22 @@ impl MouseEncoder {
     /// Forget the last cell motion was reported in, so the next motion is reported even in the same cell.
     fn reset(&mut self) {
         self.encoder.0.reset();
+    }
+}
+
+/// A mouse position libghostty can convert without overflowing, which aborts a debug build and is
+/// undefined behavior in a release one: to a cell, a `u16` once negatives are clamped to 0,
+/// and for SGR-Pixels, to an `i32`.
+/// Ghostty reports a position beyond the screen in its edge cell, so the bound costs nothing.
+fn position(name: &str, pixels: f32, cell: u32) -> PyResult<f32> {
+    let pixels_limit = 2f64.powi(31);
+    let limit = pixels_limit.min(65_536.0 * f64::from(cell));
+    if pixels.is_finite() && (-pixels_limit..limit).contains(&f64::from(pixels)) {
+        Ok(pixels)
+    } else {
+        Err(PyValueError::new_err(format!(
+            "{name} must be at least -2**31 and less than {limit} pixels, not {pixels}"
+        )))
     }
 }
 

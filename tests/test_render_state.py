@@ -233,3 +233,33 @@ def test_the_scrollback_limit_is_bytes_not_rows() -> None:
     state = RenderState(terminal)
     terminal.feed(b"row\r\n" * 20)
     assert len(state.history().rows) > 1
+
+
+def test_frame_reads_a_wide_character_cut_off_by_a_resize() -> None:
+    # libghostty truncates the alternate screen rather than rewrapping it, and leaves a wide
+    # character it cuts in half in place, with no second column, even once the screen widens again.
+    terminal, state = rendered()
+    terminal.resize(2, 1)
+    terminal.feed("\x1b[?1049h日".encode())
+    terminal.resize(1, 1)
+    cut = state.frame().rows[0]
+    assert (cut.graphemes, list(cut.widths)) == (("日",), [2])
+    terminal.resize(2, 1)
+    widened = state.frame().rows[0]
+    assert (widened.graphemes, list(widened.widths)) == (("日", " "), [2, 1])
+
+
+def test_scrolled_off_reports_a_gap_after_a_resize_on_the_alternate_screen() -> None:
+    terminal, state = rendered(SCROLLBACK_BYTES)
+    terminal.feed(b"a\r\nb\r\nc\r\nd\r\ne\x1b[?1049h")
+    state.scrolled_off()
+    terminal.resize(10, 4)
+    assert state.scrolled_off().has_gap
+    assert not state.scrolled_off().has_gap
+
+
+def test_frame_reads_c0_controls_libghostty_prints() -> None:
+    # Ghostty prints these into cells where other terminals ignore them, so a consumer sees them.
+    terminal, state = rendered()
+    terminal.feed(b"a\x1cb\x7f")
+    assert state.frame().rows[0].graphemes[:4] == ("a", "\x1c", "b", "\x7f")

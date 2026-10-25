@@ -136,3 +136,24 @@ def test_mouse_encoder_follows_modes_the_program_sets_later() -> None:
     assert mouse.encode(MouseAction.PRESS, 3, 1, button=MouseButton.LEFT) == b"\x1b[<0;4;2M"
     terminal.feed(b"\x1b[?1006l")
     assert mouse.encode(MouseAction.PRESS, 3, 1, button=MouseButton.LEFT) == b'\x1b[M $"'
+
+
+@pytest.mark.parametrize(
+    ("x", "y"),
+    [(float("nan"), 0.0), (0.0, float("inf")), (65_536.0, 0.0), (0.0, -(2.0**31) - 256)],
+)
+def test_mouse_encoder_rejects_a_position_libghostty_cannot_convert(x: float, y: float) -> None:
+    terminal = Terminal(20, 5)
+    terminal.feed(b"\x1b[?1003h\x1b[?1016h")
+    mouse = MouseEncoder(terminal)
+    with pytest.raises(ValueError, match="must be at least"):
+        mouse.encode(MouseAction.RELEASE, x, y, button=MouseButton.LEFT)
+
+
+def test_mouse_encoder_reports_a_release_far_off_the_screen_in_the_edge_cell() -> None:
+    terminal = Terminal(20, 5)
+    terminal.feed(b"\x1b[?1003h\x1b[?1006h")
+    mouse = MouseEncoder(terminal)
+    assert mouse.encode(MouseAction.RELEASE, 65_535.0, -1e9, button=MouseButton.LEFT) == (
+        b"\x1b[<0;20;1m"
+    )

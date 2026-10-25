@@ -66,9 +66,8 @@ class EvpEmulator:
         scrollback: int = 0,
     ) -> None:
         if not 0 <= scrollback <= MAX_SCROLLBACK:
-            raise ValueError(
-                f"An emulator's scrollback must be from 0 to {MAX_SCROLLBACK:_}, but got {scrollback:_}"
-            )
+            msg = f"An emulator's scrollback must be from 0 to {MAX_SCROLLBACK:_}, but got {scrollback:_}"
+            raise ValueError(msg)
         self.scrollback = scrollback
         self.terminal = Terminal(
             columns,

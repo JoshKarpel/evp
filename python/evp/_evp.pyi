@@ -473,6 +473,11 @@ class Row:
 
     A wide character's grapheme takes its first column, with width 2, and its second column
     holds an empty grapheme with width 0.
+    Ghostty can leave a wide character without its second column,
+    and evp reads it as Ghostty keeps it:
+    narrowing the alternate screen, which Ghostty truncates rather than rewraps,
+    leaves a wide character it cuts in half in the last column, still with width 2,
+    and widening the screen again puts a blank with width 1 after it.
     """
 
     @property
@@ -610,7 +615,7 @@ class KeyEncoder:
         `unshifted_codepoint` is the character the key types with no modifiers,
         which the kitty protocol reports.
         `composing` is whether the key is part of an input method's composition,
-        which sends nothing.
+        which sends nothing, but for a modifier key's own event under the kitty keyboard protocol.
         """
 
 class MouseEncoder:
@@ -650,6 +655,8 @@ class MouseEncoder:
         `button` is the button pressed or released, or for motion, the one held, if any.
         `any_button_pressed` is whether any button is held, which decides whether motion is reported
         when the program asked for motion only while a button is held (mode 1002).
+        A position may be off the screen, as when dragging outside it, but raises `ValueError`
+        unless it's at least -2**31 pixels and less than both 2**31 pixels and 65,536 cells.
         """
     def reset(self) -> None:
         """

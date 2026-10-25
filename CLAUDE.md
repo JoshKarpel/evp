@@ -18,6 +18,12 @@ as [waxy](https://github.com/JoshKarpel/waxy) is counterweight's binding to taff
   and `counterweight-tests.sh` runs counterweight's `tests/test_emulator.py` against it.
   Both need a Python with evp and counterweight (from a checkout) installed; their docstrings and header say how to run them.
 - `docs/maintaining.md`: building, releasing, upgrading libghostty-vt (and Zig with it), adding a Python version.
+- `benchmarks/`: the timing suite and build-against-build comparison for hot-path changes;
+  its `README.md` covers the workflow (release builds, comparing builds rather than runs, profiling).
+  `tips.py` measures the ratios `docs/performance.md` states; rerun it when a change could move them.
+- `tests/test_*_properties.py`: Hypothesis property tests, on the VT output strategies in `tests/strategies.py`.
+  The render state's oracle is a twin terminal fed the same calls and read by a fresh `RenderState` each time,
+  so whatever `frame` reuses must read as a from-scratch read does.
 
 ## Architecture
 
@@ -80,7 +86,15 @@ so rows name styles by index and a consumer converts each once. Index 0 is alway
 - **libghostty's docs and its behavior differ**, so probe before trusting the C header or libghostty-rs's docs.
   Each of these is pinned by a test: device attributes get Ghostty's own reply with no callback, though the header says none;
   `set_options_from_terminal` resets the mouse encoder's `track_last_cell` state, which no doc mentions;
-  `Options::max_scrollback` is bytes, not lines; and the formatter's `trim` applies to plain text only.
+  `Options::max_scrollback` is bytes, not lines; the formatter's `trim` applies to plain text only;
+  a resize truncating the alternate screen can leave a wide character with no second column;
+  and the C0 controls 0x1c to 0x1f and DEL print into cells.
+- **Ghostty's safety checks abort a debug build, and are undefined behavior in a release one.**
+  A value that overflows a conversion inside Ghostty (`@intFromFloat` on a mouse position) panics the whole process,
+  so evp bounds what it passes (`input.rs`'s `position`). The property tests are how these turn up:
+  a crash kills pytest rather than failing a test, so rerun with `-s -n0` to see Ghostty's panic.
+  One remains upstream: resizing with the viewport in the scrollback can fail the page list's integrity check;
+  `test_render_state_properties.py`'s `resize` rule works around it.
 - **No ENQ or XTVERSION callbacks**: libghostty-rs's types tie the reply's `&str` to the terminal's lifetime,
   so a Python callable can't supply one without leaking it. Ghostty sends nothing for ENQ and `libghostty` for XTVERSION.
 - **No pyo3 reference pool**: `.cargo/config.toml` sets `--cfg pyo3_disable_reference_pool`, as waxy does, and CI's
@@ -97,12 +111,14 @@ Every tool (Rust, Zig, just, uv) comes from `mise.toml`; Python dev tools come f
 - `just test` (alias `t`): `maturin develop`, mypy, pytest, and `cargo test`.
 - `just fix` (alias `f`): `git add --update`, then pre-commit (formatters, ruff, clippy, workflow checks).
 - `just build`: `uv run maturin develop`, a debug build.
+- `just bench`: a release build, then `benchmarks/suite.py`; `just bench-build` only builds.
 - `just docs-build` / `just docs-serve`: the mkdocs site.
 
 Override variables pass arguments through:
 
 - `just pytest-args="-k scrolled_off" py-test`, or after `just build`, `uv run pytest tests/test_render_state.py::test_name`
 - `just cargo-test-args="tracked_reference" rs-test`
+- `just bench-args="-k frame --compare /tmp/before.json" bench`
 - `just pre-commit-args="--all-files" fix`
 
 Build and test gotchas:
@@ -112,7 +128,10 @@ Build and test gotchas:
   To fill the scrollback's pages quickly, use a wide terminal (1,000 columns) and fewer lines, as the pruning tests do.
 - An old per-version extension (`python/evp/_evp.cpython-3XX-*.so`) left beside `_evp.abi3.so` shadows it,
   so Python imports the stale build. Delete it.
-- Benchmark only release builds (`maturin build --release`); debug numbers say nothing about evp's speed.
+- Benchmark only release builds (`just bench-build`); debug numbers say nothing about evp's speed.
+- Editing `pyproject.toml` makes the next `uv run` rebuild evp through maturin's build backend, in release,
+  over whatever `just build` installed. `just test` rebuilds first; for anything else, `just build` again,
+  or run with `uv run --no-sync`.
 
 ## Dependencies
 

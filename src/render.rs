@@ -20,7 +20,8 @@ use crate::terminal::Terminal;
 /// One row of a frame, as parallel sequences with one entry per column.
 ///
 /// A wide character's grapheme takes its first column, with width 2, and its second column
-/// holds an empty grapheme with width 0.
+/// holds an empty grapheme with width 0, except where Ghostty cut the second column off
+/// (narrowing the alternate screen), which evp reports as Ghostty keeps it.
 #[pyclass(frozen, module = "evp")]
 pub struct Row {
     /// Each column's grapheme cluster, a space where the column is blank.
@@ -316,13 +317,18 @@ impl RenderState {
         if screen != self.anchor.screen {
             // The anchor's screen isn't the one showing, and the one showing has no scrollback of
             // its own (the alternate screen) or couldn't scroll while the other showed (the primary).
+            // A resize while the alternate screen showed still rewrapped the primary's scrollback.
+            let current = size(terminal)?;
+            let has_gap = current != self.anchor.size;
             if screen == Screen::Primary {
                 self.anchor = Anchor::at_top(terminal)?;
+            } else {
+                self.anchor.size = current;
             }
             return Ok(ScrolledOff {
                 rows: PyTuple::empty(py).unbind(),
                 new_styles: self.styles.deliver(py)?,
-                has_gap: false,
+                has_gap,
             });
         }
 

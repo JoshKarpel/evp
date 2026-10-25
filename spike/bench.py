@@ -102,9 +102,8 @@ def check_equivalence() -> None:
                     actual.cursor,
                     actual.modes,
                 ) or pyghostty.scrolled_off() != evp.scrolled_off():
-                    raise SystemExit(
-                        f"{name}: the evp prototype's screen differs from counterweight's"
-                    )
+                    msg = f"{name}: the evp prototype's screen differs from counterweight's"
+                    raise SystemExit(msg)
 
 
 def best_us(feed: Callable[[bytes], None], snapshot: Callable[[], object], case: Case) -> float:
