@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "evp"
-version = "0.0.1"
+dynamic = ["version"]
 description = "A Python binding to libghostty-vt, Ghostty's terminal emulator library"
 requires-python = ">=3.13"
 license = "MIT"

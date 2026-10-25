@@ -33,5 +33,16 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # PyPI never takes a version twice, so a tag and version that disagree must stop here.
+      - name: Check versions match the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for file in dist/*; do
+            case "${file#dist/}" in
+              "evp-$version-"*.whl | "evp-$version.tar.gz") ;;
+              *) echo "::error::$file isn't version $version, from tag $GITHUB_REF_NAME"; exit 1 ;;
+            esac
+          done
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2

@@ -22,8 +22,10 @@ and publishes what it built to PyPI through [trusted publishing](https://docs.py
 Linux wheels build in maturin-action's `manylinux2014` container, so they install on glibc 2.17 and newer;
 the container installs mise and the tools in `mise.toml` for itself, since it only sees the workspace.
 
-To release, set `version` in `pyproject.toml`, which is the version the wheels carry,
+To release, set `version` in `Cargo.toml`, which maturin gives the wheels and sdist too
+(`pyproject.toml` declares the version `dynamic`, so there's no second copy to forget),
 add its entry to `docs/changelog.md`, then publish a GitHub release tagged `v<version>`.
+`release.yml` refuses to publish anything whose version isn't the tag's.
 
 Publishing relies on two pieces of setup outside the repository:
 
