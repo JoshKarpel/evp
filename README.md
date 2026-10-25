@@ -20,9 +20,15 @@ print("".join(frame.rows[0].graphemes).rstrip())  # hello, world
 The name is a pun: EVP, electronic voice phenomena, are the voices ghost hunters claim to record,
 and evp is how Python hears from Ghostty.
 
-## Status
+## Installation
 
-evp isn't on PyPI yet. To build it from source, install [mise](https://mise.jdx.dev/),
+evp is on [PyPI](https://pypi.org/project/evp/), and needs Python 3.13 or newer:
+
+```bash
+pip install evp
+```
+
+To build it from source, install [mise](https://mise.jdx.dev/),
 which provides Rust, Zig, just and uv at the versions in `mise.toml`, then:
 
 ```bash
