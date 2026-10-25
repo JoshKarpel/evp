@@ -1,0 +1,126 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "evp"
+version = "0.0.1"
+description = "A Python binding to libghostty-vt, Ghostty's terminal emulator library"
+requires-python = ">=3.13"
+license = "MIT"
+readme = "README.md"
+authors = [{ name = "Josh Karpel", email = "josh.karpel@gmail.com" }]
+keywords = ["terminal", "emulator", "ghostty", "vt"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Programming Language :: Rust",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Repository = "https://github.com/JoshKarpel/evp"
+Issues = "https://github.com/JoshKarpel/evp/issues"
+
+[tool.uv]
+exclude-newer = "7 days"
+
+[tool.maturin]
+features = ["pyo3/extension-module", "abi3"]
+python-source = "python"
+module-name = "evp._evp"
+
+[tool.ruff]
+line-length = 100
+fix = true
+src = ["python", "tests", "spike", "benchmarks"]
+
+[tool.ruff.lint]
+select = [
+    "A",
+    "ANN",
+    "ASYNC",
+    "B",
+    "C4",
+    "D200",
+    "D201",
+    "D202",
+    "D204",
+    "D206",
+    "D207",
+    "D208",
+    "D209",
+    "D210",
+    "D211",
+    "D213",
+    "D400",
+    "D419",
+    "DTZ",
+    "E",
+    "EM",
+    "EXE",
+    "F",
+    "FA",
+    "FLY",
+    "FURB",
+    "I",
+    "ISC",
+    "LOG",
+    "NPY",
+    "PERF",
+    "PGH",
+    "PIE",
+    "PL",
+    "PT",
+    "PTH",
+    "Q",
+    "RET",
+    "RSE",
+    "RUF",
+    "SIM",
+    "SLOT",
+    "UP",
+    "W",
+    "YTT",
+]
+ignore = [
+    "A002",  # builtin shadowing
+    "PLR2004",  # magic constants
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The spike's prototype reuses counterweight's code and signatures, which run 120 columns wide.
+"spike/*" = ["E501", "PLR0913", "PLR0917"]
+# A stub's defaults are never evaluated, so `mods: Mods = Mods(0)` can't share a mutable default.
+"*.pyi" = ["B008"]
+
+[tool.mypy]
+strict = true
+files = ["python", "tests", "benchmarks"]
+
+[tool.pytest]
+testpaths = ["tests"]
+addopts = ["-n", "auto", "--dist", "worksteal"]
+# A hang dumps every thread's stack and fails the run, rather than stalling CI until its job limit.
+# Generous, since a debug build compiles Ghostty unoptimized.
+faulthandler_timeout = "120"
+faulthandler_exit_on_timeout = true
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.170.1",
+    "maturin>=1.12.0",
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.6.0",
+    "mkdocstrings[python]>=0.27.0",
+    "mypy>=1.19.1",
+    "pre-commit>=4.5.1",
+    "pytest>=9.0.2",
+    "pytest-randomly>=5.0.0",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.15.1",
+]

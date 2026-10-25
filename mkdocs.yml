@@ -1,0 +1,49 @@
+site_name: evp
+site_description: A Python binding to libghostty-vt, Ghostty's terminal emulator library
+repo_url: https://github.com/JoshKarpel/evp
+repo_name: JoshKarpel/evp
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+extra_css:
+  - extra.css
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          inventories:
+            - https://docs.python.org/3/objects.inv
+          options:
+            show_source: false
+            show_root_heading: true
+            members_order: source
+            heading_level: 3
+            show_signature_annotations: true
+            separate_signature: true
+            signature_crossrefs: true
+            merge_init_into_class: true
+            docstring_options:
+              ignore_init_summary: true
+            filters:
+              - "!^_"
+
+nav:
+  - Home: index.md
+  - api.md
+  - performance.md
+  - changelog.md
+  - maintaining.md

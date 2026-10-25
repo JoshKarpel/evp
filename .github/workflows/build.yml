@@ -1,0 +1,109 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+# The wheels and sdist release.yml publishes, built and tested here on every push too,
+# so a release runs the build a pull request already ran.
+# No caches, unlike ci.yml: each build clones Ghostty afresh,
+# so nothing another run wrote can end up in a published wheel.
+
+jobs:
+  wheels:
+    name: Wheel (${{ matrix.os }})
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-15, not macos-latest: on macOS 26, Zig 0.15.2 (Ghostty's, for libghostty-vt 0.2.2) can't link
+        # its own build runner against libSystem. A Ghostty that takes a newer Zig can move to macos-latest.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+
+    permissions:
+      contents: read
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Zig and Rust for the macOS and Windows builds, which run on the runner, and uv for testing the wheel.
+      - name: Install tools
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca  # v5.1.1
+        with:
+          version: 2026.10.12
+          cache: false
+
+      # On Linux this builds in maturin-action's manylinux2014 container, which mounts only the workspace,
+      # so the container installs its own mise. The musl build of mise is the one that runs on manylinux2014's glibc 2.17.
+      # Keep MISE_VERSION in step with mise-action's `version` above, and maturin-version with uv.lock's maturin.
+      - name: Build wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
+        with:
+          maturin-version: v1.15.0
+          manylinux: auto
+          args: --release --out dist
+          before-script-linux: |
+            curl -fsSL https://mise.run | MISE_VERSION=v2026.10.12 MISE_INSTALL_MUSL=1 sh
+            export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"
+            mise trust
+            mise install
+
+      # One abi3 wheel serves every supported Python, so test it against each of ci.yml's.
+      - name: Test wheel
+        run: |
+          for python in 3.13 3.14 3.15; do
+            uv sync --locked --no-install-project --python "$python"
+            uv pip install dist/*.whl
+            uv run --no-sync pytest
+          done
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: wheels-${{ matrix.os }}
+          path: dist
+
+  sdist:
+    name: Sdist
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
+        with:
+          maturin-version: v1.15.0
+          command: sdist
+          args: --out dist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: sdist
+          path: dist

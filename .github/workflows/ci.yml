@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-15, not macos-latest: on macOS 26, Zig 0.15.2 (Ghostty's, for libghostty-vt 0.2.2) can't link
+        # its own build runner against libSystem. A Ghostty that takes a newer Zig can move to macos-latest.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-latest]
+        python-version: ["3.13", "3.14", "3.15"]
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+      # Setting RUSTFLAGS replaces .cargo/config.toml's rustflags, so repeat them here.
+      RUSTFLAGS: -D warnings --cfg pyo3_disable_reference_pool
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca  # v5.1.1
+        with:
+          version: 2026.10.12
+
+      # Without the cache every job clones and builds Ghostty, which libghostty-vt-sys's
+      # build.rs does into target/.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-${{ hashFiles('Cargo.lock', 'mise.toml') }}
+
+      - name: Fix
+        run: just pre-commit-args="--verbose --all-files --show-diff-on-failure" fix
+
+      - name: Test
+        run: just test
