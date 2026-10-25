@@ -274,15 +274,17 @@ Revisit pydust if it supports Ghostty's Zig version; evp's Python API wouldn't c
 
 ## How is it built and released?
 
-- **Wheels** for manylinux (x86_64, aarch64), macOS (arm64, x86_64) and Windows (x86_64),
+- **Wheels** for manylinux (x86_64, aarch64), macOS (arm64) and Windows (x86_64),
   from `PyO3/maturin-action`.
   waxy builds only on each runner's native architecture (x86_64 Linux and Windows, arm64 macOS),
-  so aarch64 Linux and x86_64 macOS are targets waxy doesn't have.
+  so aarch64 Linux is a target waxy doesn't have.
   Each needs Ghostty built for that target.
+  x86_64 macOS has no wheel: its runner is the most expensive and the slowest to build on, for few users,
+  so pip builds evp from the sdist there.
   `libghostty-vt-sys` cross-compiles: maturin with `--zig` builds an aarch64 Linux wheel on an x86_64 host,
   tagged `manylinux_2_17`, in about 3 minutes 50 seconds cold (on the first spike's newer Ghostty).
   But a cross-built wheel can't be tested where it's built, and GitHub has a native runner for every target
-  (`ubuntu-24.04-arm`, `macos-15-intel`), so each target builds and tests on its own runner,
+  (`ubuntu-24.04-arm`), so each target builds and tests on its own runner,
   and cross-compiling is the way out if a runner goes away.
   arm64 macOS builds on `macos-15` rather than `macos-latest`,
   since on the macOS 26 image Zig 0.15.2 can't link its own build runner against libSystem.
@@ -333,7 +335,7 @@ What evp adds is mostly Zig on every runner that compiles, and a cache for Ghost
   It runs alongside CI rather than inside it, and without CI's cache,
   so a release publishes exactly the build every pull request already ran, and nothing another run cached reaches a wheel.
   What that costs: a cold Ghostty build on every runner, every push:
-  building the release wheel takes about 4 minutes on Linux and Intel macOS, and 2 on Windows.
+  building the release wheel takes about 4 minutes on Linux, and 2 on Windows.
 - **Release** (`.github/workflows/release.yml`): on a published GitHub release,
   calls `build.yml`, then publishes its wheels and sdist with `pypa/gh-action-pypi-publish` through
   [trusted publishing](https://docs.pypi.org/trusted-publishers/):
@@ -462,7 +464,7 @@ and only dependency-bot commits since May 2026.
 - **libghostty-rs has two main contributors.** It's licensed MIT or Apache-2.0, so if it stalls, evp can fork it
   and keep it current with Ghostty's C API itself: about 20,000 lines to own, so the risk is work, not a dead end.
 - **Ghostty's build makes CI slow.**
-  Cold, CI's debug build takes about 4 minutes on Linux, 3.5 to 5 on Windows and 7 on Intel macOS.
+  Cold, CI's debug build takes about 4 minutes on Linux and 3.5 to 5 on Windows.
   How much the cache saves is unmeasured until a run finds it warm.
   The newer Ghostty the first spike pinned took more than twice as long as 0.2.2's to build locally,
   so the upgrade will slow it further.

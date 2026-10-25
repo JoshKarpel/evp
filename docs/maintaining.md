@@ -16,14 +16,17 @@ so `maturin` and plain `cargo` share that directory rather than invalidating eac
 
 `.github/workflows/build.yml` builds an `abi3` wheel on each platform's own runner,
 tests it against every supported Python, and builds an sdist.
+Intel macOS gets no wheel, since its runner costs the most for the fewest users, so pip builds evp from the sdist there.
 It runs on every push and pull request, alongside CI, so the release build is checked before a release needs it.
 Publishing a GitHub release runs `.github/workflows/release.yml`, which calls `build.yml`
 and publishes what it built to PyPI through [trusted publishing](https://docs.pypi.org/trusted-publishers/).
 Linux wheels build in maturin-action's `manylinux2014` container, so they install on glibc 2.17 and newer;
 the container installs mise and the tools in `mise.toml` for itself, since it only sees the workspace.
 
-To release, set `version` in `pyproject.toml`, which is the version the wheels carry,
+To release, set `version` in `Cargo.toml`, which maturin gives the wheels and sdist too
+(`pyproject.toml` declares the version `dynamic`, so there's no second copy to forget),
 add its entry to `docs/changelog.md`, then publish a GitHub release tagged `v<version>`.
+`release.yml` refuses to publish anything whose version isn't the tag's.
 
 Publishing relies on two pieces of setup outside the repository:
 
@@ -46,7 +49,7 @@ so a new libghostty-vt release can need a new Zig:
    which runs counterweight's emulator tests against evp.
    Several tests pin libghostty behavior that its own docs describe differently (`CLAUDE.md` lists them),
    so a failure there can mean Ghostty changed the behavior, not that evp broke.
-4. While Zig is 0.15, CI builds arm64 macOS on `macos-15`,
+4. While Zig is 0.15, CI builds macOS on `macos-15`,
    since Zig 0.15.2 can't link on GitHub's macOS 26 image (`macos-latest`).
    With a newer Zig, try `macos-latest` in `ci.yml` and `build.yml`.
 
