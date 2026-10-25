@@ -17,7 +17,7 @@ as [waxy](https://github.com/JoshKarpel/waxy) is counterweight's binding to taff
 - `spike/`: `emulator.py` is counterweight's `Emulator` rebuilt on evp; `bench.py` times it against counterweight's,
   and `counterweight-tests.sh` runs counterweight's `tests/test_emulator.py` against it.
   Both need a Python with evp and counterweight (from a checkout) installed; their docstrings and header say how to run them.
-- `docs/maintaining.md`: building, upgrading libghostty-vt (and Zig with it), adding a Python version.
+- `docs/maintaining.md`: building, releasing, upgrading libghostty-vt (and Zig with it), adding a Python version.
 
 ## Architecture
 

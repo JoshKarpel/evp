@@ -12,6 +12,28 @@ so CI caches Cargo's target directory, keyed on `Cargo.lock` and `mise.toml`.
 The justfile exports `PYO3_ENVIRONMENT_SIGNATURE` and `PYO3_PYTHON`,
 so `maturin` and plain `cargo` share that directory rather than invalidating each other's builds.
 
+## Releasing
+
+`.github/workflows/build.yml` builds an `abi3` wheel on each platform's own runner,
+tests it against every supported Python, and builds an sdist.
+It runs on every push and pull request, alongside CI, so the release build is checked before a release needs it.
+Publishing a GitHub release runs `.github/workflows/release.yml`, which calls `build.yml`
+and publishes what it built to PyPI through [trusted publishing](https://docs.pypi.org/trusted-publishers/).
+Linux wheels build in maturin-action's `manylinux2014` container, so they install on glibc 2.17 and newer;
+the container installs mise and the tools in `mise.toml` for itself, since it only sees the workspace.
+
+To release, set `version` in `pyproject.toml`, which is the version the wheels carry,
+add its entry to `docs/changelog.md`, then publish a GitHub release tagged `v<version>`.
+
+Publishing relies on two pieces of setup outside the repository:
+
+- A trusted publisher on PyPI for `evp`: owner `JoshKarpel`, repository `evp`,
+  workflow `release.yml`, environment `pypi`.
+- A `pypi` environment in the repository's settings, with a required reviewer,
+  so a release waits for approval before anything reaches PyPI, where a version can never be uploaded twice.
+
+`build.yml` pins maturin and mise to the versions `uv.lock` and `ci.yml` use; keep them in step when those move.
+
 ## Upgrading libghostty-vt
 
 Ghostty refuses to build with any Zig but the one its `build.zig.zon` names,
@@ -29,6 +51,6 @@ covers the next release and what evp gains from it.
 ## Adding support for a new Python version
 
 evp builds one `abi3` wheel per platform for every CPython from 3.13 on,
-so a new Python needs no new wheels. Add it to CI's `python-version` matrix,
+so a new Python needs no new wheels. Add it to CI's `python-version` matrix and to the versions `build.yml` tests the wheel against,
 and add its `Programming Language :: Python :: 3.X` classifier to `pyproject.toml`.
 If PyO3 doesn't support it yet, upgrade PyO3 in `Cargo.toml` first.

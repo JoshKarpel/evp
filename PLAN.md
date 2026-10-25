@@ -298,15 +298,19 @@ What evp adds is mostly Zig on every runner that compiles, and a cache for Ghost
   A matrix of Linux, macOS and Windows by each supported Python
   runs `just fix` (pre-commit over every file) and `just test` (mypy, pytest, and `cargo test`, with `-D warnings`),
   and caches Cargo's target directory, since every cell otherwise builds Ghostty from a clean clone.
+- **Build** (`.github/workflows/build.yml`): on pushes to `main`, pull requests, by hand, and when `release.yml` calls it,
+  builds an `abi3` wheel per platform with `PyO3/maturin-action`, tests it against each supported Python, and builds an sdist.
+  On macOS and Windows maturin-action builds on the runner, so `mise-action` ahead of it puts Zig on `PATH`;
+  on Linux it builds in a container, which needs mise of its own (see below).
+  It runs alongside CI rather than inside it, and without CI's cache,
+  so a release publishes exactly the build every pull request already ran, and nothing another run cached reaches a wheel.
+  What that costs: a cold Ghostty build on every runner, every push (about 2 minutes 10 seconds locally for Linux x86_64).
 - **Release** (`.github/workflows/release.yml`): on a published GitHub release,
-  builds an `abi3` wheel per platform with `PyO3/maturin-action`, and an sdist,
-  then publishes them with `pypa/gh-action-pypi-publish` through
+  calls `build.yml`, then publishes its wheels and sdist with `pypa/gh-action-pypi-publish` through
   [trusted publishing](https://docs.pypi.org/trusted-publishers/):
   only the publish job grants `id-token: write`, it runs in a `pypi` environment, and no API token exists.
   evp also needs a pending publisher on PyPI for `evp` (this repository, `release.yml`, the `pypi` environment)
   before the first release.
-  On macOS and Windows maturin-action builds on the runner, so `mise-action` ahead of it puts Zig on `PATH`;
-  on Linux it builds in a container, which needs mise of its own (see below).
   A pending publisher doesn't reserve the name: if anyone else uploads `evp` first, PyPI discards it,
   so step 2's pre-release follows the pending publisher closely.
 - **Linux wheels build in maturin-action's manylinux container**, unlike waxy's.
@@ -321,7 +325,7 @@ What evp adds is mostly Zig on every runner that compiles, and a cache for Ghost
   `before-script-linux` runs in the same shell as `maturin build`, so it installs mise and runs `mise install` from the repository's `mise.toml`:
 
   ```bash
-  curl -fsSL https://mise.run | MISE_VERSION=v2026.10.4 MISE_INSTALL_MUSL=1 sh
+  curl -fsSL https://mise.run | MISE_VERSION=v2026.10.12 MISE_INSTALL_MUSL=1 sh
   export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"
   mise trust
   mise install
