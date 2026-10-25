@@ -25,11 +25,15 @@ The Rust source (`src/`) exposes a flat PyO3 module `_evp`, which `python/evp/__
 
 | File | Contents |
 |------|----------|
-| `src/lib.rs` | PyO3 module definition, wires each file's `register()` |
+| `src/lib.rs` | PyO3 module definition, wires each file's `register()`; `Owned`, the `Send` wrapper for libghostty objects |
 | `src/errors.rs` | `GhosttyError`, and `ghostty_error` for `map_err` on every libghostty-vt `Result` |
+| `src/enums.rs` | The Python `IntEnum`s and `IntFlag`s (`Key`, `Mods`, `MouseButton`, ...), built at import from libghostty's C constants |
 | `src/style.rs` | `Style`, a hashable value copy of libghostty's style, with colors as `None`, a palette index or RGB |
-| `src/terminal.rs` | `Terminal`: feeding bytes, resizing, modes, title, default colors and palette, the `on_write_pty` callback |
+| `src/terminal.rs` | `Terminal`: feeding bytes, resizing, modes, title, colors, viewport, its callbacks; `DeviceAttributes` |
 | `src/render.rs` | `RenderState` and what it returns (`Frame`, `ScrolledOff`, `History`, `Row`) |
+| `src/input.rs` | `KeyEncoder` and `MouseEncoder`, which read the terminal's modes for each event |
+| `src/encode.rs` | The stateless encoders (focus, paste, color scheme, size report) and the width functions |
+| `src/format.rs` | `Formatter` |
 
 `RenderState` is where the work is. Three reads share one style table:
 
@@ -57,13 +61,28 @@ so rows name styles by index and a consumer converts each once. Index 0 is alway
   a page reuses a freed style id for another style, so each style id's style is read again from the dirty row;
   and a cell's codepoints after its first live outside its raw value, so a row with a multi-codepoint grapheme cluster
   (`style_probes: None`) is never reused by its cells. Tests in `tests/test_render_state.py` reproduce both.
+- **No mirrored row or cell iterators.** A call from Python into Rust per cell is slower than `frame()` plus a Python loop
+  over every cell, so the bulk reads are the only way to read cells; PLAN.md's "Why no iterators?" has the measurements.
+  A cell a bulk read lacks (a hyperlink) belongs on `Row`, or in a point lookup for sparse reads, not in an iterator.
 - **A terminal has at most one `RenderState`.** A second would take the first's dirty flags, so `RenderState::new`
   refuses it through `Terminal.is_rendered`, an `Arc<AtomicBool>` its `Drop` clears.
 - **No `#[pyclass(unsendable)]`**, as in waxy. libghostty's objects hold raw pointers, so `OwnedTerminal` and `Owned<T>`
   carry `unsafe impl Send + Sync`, which rests on every access to them going through a `&mut self` method
   (or `Py::borrow_mut`), so PyO3's borrow checking makes each access exclusive. A `&self` method that touches them breaks that.
-- **`on_write_pty` exceptions** are stored in `Terminal.raised` while libghostty runs the callback, then raised when the call
-  (`feed`, `resize`) returns, first one wins.
+- **Callback exceptions** are stored in `Terminal.raised` while libghostty runs the callback, then raised when the call
+  (`feed`, `resize`, `reset`) returns, first one wins. A callback runs while the terminal is borrowed,
+  so it's passed what it needs (the new title, the clipboard's contents) rather than calling back into the terminal.
+- **Enums are Python `IntEnum`s and `IntFlag`s built at import** (`src/enums.rs`) from libghostty-vt-sys's constants,
+  so their values have one source. Rust takes them as plain integers and converts with `enums::parse`.
+  `tests/test_stub.py` checks the stub's members against them, and that the stub and module name the same things.
+- **`MouseEncoder` syncs from the terminal only when its mouse modes or size changed**:
+  libghostty's `set_options_from_terminal` and `set_size` both forget the last cell, which breaks `track_last_cell`.
+- **libghostty's docs and its behavior differ**, so probe before trusting the C header or libghostty-rs's docs.
+  Each of these is pinned by a test: device attributes get Ghostty's own reply with no callback, though the header says none;
+  `set_options_from_terminal` resets the mouse encoder's `track_last_cell` state, which no doc mentions;
+  `Options::max_scrollback` is bytes, not lines; and the formatter's `trim` applies to plain text only.
+- **No ENQ or XTVERSION callbacks**: libghostty-rs's types tie the reply's `&str` to the terminal's lifetime,
+  so a Python callable can't supply one without leaking it. Ghostty sends nothing for ENQ and `libghostty` for XTVERSION.
 - **No pyo3 reference pool**: `.cargo/config.toml` sets `--cfg pyo3_disable_reference_pool`, as waxy does, and CI's
   `RUSTFLAGS` replaces that list, so `ci.yml` repeats the flag; keep the two in sync.
 - **`abi3`**: maturin builds one limited-API wheel for CPython 3.13 and newer (`[tool.maturin] features`); the `abi3` Cargo feature is off for plain `cargo`.
@@ -106,3 +125,5 @@ so the lockfiles stay in sync. `pyproject.toml`'s `exclude-newer` and mise's `mi
 2. Update `python/evp/_evp.pyi`, docstrings included, since they are the API reference, and `python/evp/__init__.py`'s exports.
 3. Add the class to `docs/api.md` if it's new, and an entry to `docs/changelog.md`.
 4. If counterweight would see the change, update `spike/emulator.py` and rerun `spike/counterweight-tests.sh`.
+
+A new enum goes in `src/enums.rs`'s `ENUMS` and in the stub; `tests/test_stub.py` fails until the two agree.

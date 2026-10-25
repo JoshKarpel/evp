@@ -76,6 +76,9 @@ so the upgrade isn't urgent for counterweight's speed.
   If the anchor still can't tell an erase from no change, `scrolled_off()` remembers the id of the last row it returned
   and reports a gap when that row is gone.
 - **`frame()` calls `clean` and `cursor`** in place of the per-row and per-field calls.
+- **arm64 macOS builds on `macos-latest` again.**
+  On the macOS 26 image, Zig 0.15.2 can't link its own build runner against libSystem,
+  so `ci.yml` and `build.yml` run on `macos-15`; once the new Zig builds Ghostty on `macos-latest`, they move back.
 
 `Row`, `Style`, `Frame`, `ScrolledOff` and `History` don't change.
 

@@ -49,6 +49,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # The spike's prototype reuses counterweight's code and signatures, which run 120 columns wide.
 "spike/*" = ["E501", "PLR0913", "PLR0917"]
+# A stub's defaults are never evaluated, so `mods: Mods = Mods(0)` can't share a mutable default.
+"*.pyi" = ["B008"]
 
 [tool.mypy]
 strict = true

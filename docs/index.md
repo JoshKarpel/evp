@@ -37,6 +37,27 @@ A `RenderState` reads the terminal: `frame` for what's on the screen,
 and `history` for the whole scrollback.
 A terminal has one render state at a time.
 
+## Sending it input
+
+A program reads keys, mouse events, focus changes and pastes from its terminal as bytes,
+encoded as the modes it set ask: the kitty keyboard protocol, SGR mouse reports, bracketed paste.
+evp's encoders read those modes from the terminal, so what they return goes straight on the program's input.
+
+```python
+from evp import Key, KeyEncoder, Mods, MouseAction, MouseButton, MouseEncoder, encode_paste
+
+keys = KeyEncoder(terminal)
+keys.encode(Key.ENTER)  # b"\r"
+keys.encode(Key.C, text="c", mods=Mods.CTRL)  # b"\x03"
+
+mouse = MouseEncoder(terminal)
+mouse.encode(
+    MouseAction.PRESS, 3, 1, button=MouseButton.LEFT
+)  # b"" until the program asks for mouse reports
+
+encode_paste("some text", bracketed=terminal.mode(2004))
+```
+
 ## Reading it every frame
 
 evp is built for callers that read a terminal many times a second, like a terminal UI embedding one.

@@ -44,6 +44,11 @@ so a new libghostty-vt release can need a new Zig:
    and set `zig` in `mise.toml` to the `minimum_zig_version` in that commit's `build.zig.zon`.
 3. Run `just check`, then `spike/counterweight-tests.sh`,
    which runs counterweight's emulator tests against evp.
+   Several tests pin libghostty behavior that its own docs describe differently (`CLAUDE.md` lists them),
+   so a failure there can mean Ghostty changed the behavior, not that evp broke.
+4. While Zig is 0.15, CI builds arm64 macOS on `macos-15`,
+   since Zig 0.15.2 can't link on GitHub's macOS 26 image (`macos-latest`).
+   With a newer Zig, try `macos-latest` in `ci.yml` and `build.yml`.
 
 [`plans/upgrade-libghostty-vt.md`](https://github.com/JoshKarpel/evp/blob/main/plans/upgrade-libghostty-vt.md)
 covers the next release and what evp gains from it.

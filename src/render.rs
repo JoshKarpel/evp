@@ -12,18 +12,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyString, PyTuple};
 use rustc_hash::FxHashMap;
 
+use crate::Owned;
 use crate::errors::ghostty_error;
 use crate::style::{Color, Style};
 use crate::terminal::Terminal;
-
-/// A libghostty render-state object or tracked grid reference, owned by a Python `RenderState`.
-struct Owned<T>(T);
-
-// SAFETY: as for `OwnedTerminal`: libghostty's render state, its iterators and its tracked grid
-// references have no thread affinity, and only `RenderState`'s `&mut self` methods touch them, so
-// each access has exclusive use of them whatever thread it runs on.
-unsafe impl<T> Send for Owned<T> {}
-unsafe impl<T> Sync for Owned<T> {}
 
 /// One row of a frame, as parallel sequences with one entry per column.
 ///

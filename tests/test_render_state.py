@@ -225,3 +225,11 @@ def test_history_reads_wide_characters_and_grapheme_clusters() -> None:
     row = state.history().rows[0]
     assert row.graphemes[:3] == ("日", "", "e\u0301")
     assert list(row.widths[:3]) == [2, 0, 1]
+
+
+def test_the_scrollback_limit_is_bytes_not_rows() -> None:
+    # libghostty-rs documents the limit as lines, but a limit of 1 keeps a page of rows.
+    terminal = Terminal(12, 4, max_scrollback_bytes=1)
+    state = RenderState(terminal)
+    terminal.feed(b"row\r\n" * 20)
+    assert len(state.history().rows) > 1

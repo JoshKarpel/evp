@@ -1,6 +1,9 @@
 [tools]
 just = "1.59.0"
-rust = { version = "1.99.1", components = "clippy,rustfmt" }
+# The profile is named so every rustup agrees on which components a whole toolchain has: GitHub's
+# macOS 26 image has Homebrew's rustup ahead of ~/.cargo/bin's, and without it mise installed through one
+# and then, under maturin, took the toolchain for the default profile and failed adding rust-docs through the other.
+rust = { version = "1.99.1", profile = "minimal", components = "clippy,rustfmt" }
 uv = "0.13.1"
 # libghostty-vt-sys builds Ghostty with whatever `zig` is on PATH, and Ghostty refuses any Zig
 # but the one its build.zig.zon names, so this follows the Ghostty commit pinned by the

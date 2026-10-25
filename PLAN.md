@@ -72,8 +72,9 @@ and `screen.dirty` is the set of rows that changed.
 
 A JavaScript engine inlines xterm.js's small calls, so reading cell by cell is cheap there.
 A call from Python into native code costs far more than the work it does,
-so evp's reads return values, as pyte's do, and its fast helpers read a whole row in one call.
-Its low-level layer still reads a cell at a time, as xterm.js does, for code that wants one.
+so evp's reads return values, as pyte's do, and read the whole screen in one call.
+Reading it a cell at a time is slower than that even for code that visits every cell
+(see [Why no iterators?](#why-no-iterators)), so evp has no cell-at-a-time read.
 
 ## The binding's API
 
@@ -91,15 +92,16 @@ flowchart TB
 evp is a general Python API to libghostty-vt, and counterweight's `Emulator` is one consumer of it.
 It has two layers, as waxy does.
 
-- **The low-level layer mirrors the C API**, as waxy's `TaffyTree` mirrors taffy's:
-  one Python class for each of libghostty-vt's objects (a terminal, a render state, a row iterator, a key encoder),
+- **The low-level layer mirrors the C API's objects**, as waxy's `TaffyTree` mirrors taffy's:
+  one Python class for each of libghostty-vt's objects (a terminal, a render state, a key encoder),
   a method for each of its functions, enums for its constants, exceptions for its error codes,
   callbacks as Python callables, and reads that return immutable values.
-  Anything libghostty-vt can do, a Python program can do through it, one call at a time.
-- **Fast helpers do in one call what would be a loop over the low-level layer**, as waxy's `absolute_layouts(root)`
+- **Where the C API iterates, evp reads in bulk instead**, as waxy's `absolute_layouts(root)`
   returns every visible node with its absolute position, where Python would walk `children` and `layout` node by node.
-  A helper exists where the loop's calls from Python would cost more than the work they do,
-  and returns what the loop would have, so it's never the only way to get something.
+  The bulk read is the only way to get what the iterators would have:
+  a loop that crosses from Python into Rust once per item is slower than one call that returns every item,
+  even for a caller that visits every item, so mirroring the iterators would add a slower way to do the same thing.
+  A caller that wants one item (the cell under the mouse) is the exception, which a point lookup serves.
 
 ```python
 terminal = Terminal(columns=120, rows=40, max_scrollback_bytes=10_000_000, on_write_pty=pty.write)
@@ -107,16 +109,8 @@ terminal.feed(output)
 terminal.resize(columns=100, rows=30)
 
 state = RenderState(terminal)
-state.update()
 
-# Low level: libghostty-vt's iterators, a call per row and per cell.
-rows = state.row_iterator()
-while rows.next():
-    cells = rows.cells()
-    while cells.next():
-        cells.graphemes(), cells.style()
-
-# A fast helper: every row, each changed one read in one native call, as values.
+# Every row, each changed one read in one native call, as values.
 frame = state.frame()  # the cursor, colors, styles added since the last frame, and the rows
 for row in frame.rows:  # a row unchanged since the last frame is the same object
     row.graphemes, row.widths, row.styles
@@ -127,17 +121,24 @@ pty.write(keys.encode(Key.ENTER, mods=Mods.CTRL))
 
 The first release covers what embedding a terminal needs:
 
-| Area | libghostty-vt | Low level | Fast helpers |
+| Area | libghostty-vt | Low level | Bulk reads |
 | --- | --- | --- | --- |
-| The terminal | `terminal.h`, `modes.h`, `device.h`: write, resize, reset, scroll the viewport, options and callbacks (replies to the program, title, working directory, clipboard, bell, unknown sequences) | `Terminal` | |
-| Reading the screen | `render.h`, `screen.h`, `style.h`, `color.h`: render state, dirty rows, cells, styles, the palette, grid references into the scrollback | `RenderState`, its row and cell iterators, `Style`, `Color` | `RenderState.frame()`, `RenderState.scrolled_off()`, `RenderState.history()` |
+| The terminal | `terminal.h`, `modes.h`, `device.h`: write, resize, reset, scroll the viewport, options and callbacks (replies to the program, the bell, title, working directory, clipboard writes, and the size, color scheme and device attributes it reports) | `Terminal`, `DeviceAttributes` | |
+| Reading the screen | `render.h`, `screen.h`, `style.h`, `color.h`: render state, dirty rows, cells, styles, the palette, grid references into the scrollback | `RenderState`, `Style`, `Color` | `RenderState.frame()`, `RenderState.scrolled_off()`, `RenderState.history()` |
 | Input to the program | `key/`, `mouse/`, `focus.h`, `paste.h`, `size_report.h`, `modes.h`, `color_scheme.h` encoders | `KeyEncoder`, `MouseEncoder`, `encode_focus`, `encode_paste`, ... | |
 | Text out | `formatter.h`: the terminal's contents as plain text or VT | `Formatter` | |
 | Widths | `unicode.h`: a codepoint's and a grapheme's width, as libghostty measures them | `codepoint_width`, `grapheme_width` | |
 
+libghostty-vt 0.2.2 has no callback for sequences the terminal doesn't recognize.
+Its callbacks for the replies to ENQ and XTVERSION tie the reply's string to the terminal's lifetime,
+so a Python callable can't supply one, and evp leaves them unset:
+Ghostty then sends nothing for ENQ and "libghostty" for XTVERSION.
+Enums are Python `IntEnum`s and `IntFlag`s (`Key`, `Mods`, `MouseButton`), built from libghostty's C constants.
+
 Later releases cover the rest, each of which has its own object lifetimes and callbacks to design,
 so each waits for its own design rather than a mirror rushed into the first release:
-selection and its gestures (`selection.h`), search (`search.h`), tracked grid references (`grid_ref_tracked.h`),
+a point lookup for one cell (`screen.h`'s grid references), for a consumer that reads a cell the bulk reads don't,
+like its hyperlink, selection and its gestures (`selection.h`), search (`search.h`), tracked grid references (`grid_ref_tracked.h`),
 saving and restoring a terminal (`snapshot.h`), the standalone OSC and SGR parsers,
 and kitty graphics (`kitty_graphics.h`), which counterweight's [#441](https://github.com/JoshKarpel/counterweight/issues/441) wants.
 
@@ -190,6 +191,31 @@ colors as `Color` and `IndexedColor`, and the swapped colors of inverse and invi
 It runs once per changed row, as now.
 Whether counterweight's `input_encoding` gives way to evp's encoders is a separate decision, after this plan:
 its pure functions are tested and work, and swapping them changes nothing this plan fixes.
+
+### Why no iterators?
+
+A call from Python into Rust costs about 43 ns, loop included, before it does anything,
+and a screen is thousands of cells, so the crossings alone outweigh reading the whole screen natively.
+A throwaway prototype measured it on a release build, on a 120×40 screen with every row changed
+(two screens alternating, so `frame()` reused no row), on Python 3.15 on a 2-core VM.
+Each read touches every cell's grapheme and style.
+The per-cell prototype reads a cell's grapheme and style in one call, through a grid reference,
+where an iterator takes at least three (advance, grapheme, style), so it flatters reading a cell at a time.
+Best µs per read of the whole screen:
+
+| Read | Plain text | Every word colored |
+| --- | --- | --- |
+| `frame()` alone | 167 | 211 |
+| `frame()`, then a Python loop over every cell | 434 | 482 |
+| one call per cell, returning its grapheme and `Style` | 864 | 863 |
+| one call per cell that does nothing | 208 | 208 |
+
+Calls that do nothing take longer than `frame()` reading every cell,
+and reading a cell at a time takes about twice as long as `frame()` and a Python loop over its rows.
+The table is the worst case for `frame()`, which in use skips the rows that didn't change,
+and the best case for iterating, which would take at least three calls a cell where the prototype takes one.
+Reading one cell inverts it: a call reads one in 0.21 µs, where `frame()` takes 3.0 µs with nothing changed
+and 4.2 µs after a row changes, which is why the exception is a point lookup and not an iterator.
 
 ## Which language?
 
@@ -258,6 +284,8 @@ Revisit pydust if it supports Ghostty's Zig version; evp's Python API wouldn't c
   But a cross-built wheel can't be tested where it's built, and GitHub has a native runner for every target
   (`ubuntu-24.04-arm`, `macos-15-intel`), so each target builds and tests on its own runner,
   and cross-compiling is the way out if a runner goes away.
+  arm64 macOS builds on `macos-15` rather than `macos-latest`,
+  since on the macOS 26 image Zig 0.15.2 can't link its own build runner against libSystem.
   counterweight runs only on Linux and macOS (it uses `pty` and `termios`), but evp only feeds bytes
   and reads the screen, so it's useful on Windows too, as waxy is.
   libghostty-rs builds and tests `libghostty-vt` for Windows x86_64 (MSVC and GNU) in CI on every push to `master`,
@@ -304,15 +332,15 @@ What evp adds is mostly Zig on every runner that compiles, and a cache for Ghost
   on Linux it builds in a container, which needs mise of its own (see below).
   It runs alongside CI rather than inside it, and without CI's cache,
   so a release publishes exactly the build every pull request already ran, and nothing another run cached reaches a wheel.
-  What that costs: a cold Ghostty build on every runner, every push (about 2 minutes 10 seconds locally for Linux x86_64).
+  What that costs: a cold Ghostty build on every runner, every push:
+  building the release wheel takes about 4 minutes on Linux and Intel macOS, and 2 on Windows.
 - **Release** (`.github/workflows/release.yml`): on a published GitHub release,
   calls `build.yml`, then publishes its wheels and sdist with `pypa/gh-action-pypi-publish` through
   [trusted publishing](https://docs.pypi.org/trusted-publishers/):
   only the publish job grants `id-token: write`, it runs in a `pypi` environment, and no API token exists.
-  evp also needs a pending publisher on PyPI for `evp` (this repository, `release.yml`, the `pypi` environment)
-  before the first release.
+  PyPI has a pending publisher for `evp` (this repository, `release.yml`, the `pypi` environment).
   A pending publisher doesn't reserve the name: if anyone else uploads `evp` first, PyPI discards it,
-  so step 2's pre-release follows the pending publisher closely.
+  so the name is unclaimed until evp's first release.
 - **Linux wheels build in maturin-action's manylinux container**, unlike waxy's.
   maturin-action (v1) builds on the runner itself unless it's given `manylinux`, `container`, or a cross `target`,
   and waxy gives none, so its Linux wheels are tagged `manylinux_2_34`: they need glibc 2.34 or newer.
@@ -361,11 +389,11 @@ Steps 1 to 3 happen in this repository; steps 4 and 5 in counterweight.
    ran counterweight's emulator tests against a prototype `Emulator` on it,
    and checked how libghostty's rows behave through a scroll, whether `libghostty-vt-sys` cross-compiles,
    and whether pydust supports Ghostty's Zig.
-   Still to measure, once CI runs: how long a clean build of Ghostty takes there, with and without the cache.
-2. **The rest of the scaffolding**: the release workflow, Dependabot, and the pending publisher on PyPI.
-   A pre-release published to PyPI from a GitHub release proves the release workflow end to end.
+2. **The rest of the scaffolding** (done): the build and release workflows, Dependabot, and the pending publisher on PyPI.
+   `build.yml` builds and tests every wheel on every pull request, so the first release is the release workflow's first run.
 3. **evp**: the first release's areas (see [The binding's API](#the-bindings-api)),
    tests of its own, stubs, and docs.
+   Done, without mirroring the render state's iterators (see [Why no iterators?](#why-no-iterators)).
 4. **`counterweight.emulator` on evp**, behind the same `Emulator` and `Screen`:
    counterweight's `tests/test_emulator.py` is the contract, unchanged.
    Delete the cffi code, the row and cell caches evp replaces, and the overscan search.
@@ -422,6 +450,8 @@ and only dependency-bot commits since May 2026.
   chiefly a scrollback limit in bytes rather than lines.
 - **`abi3`**: one wheel per platform, for a few microseconds a frame.
 - **A native runner per wheel target**, since `libghostty-vt-sys` cross-compiles but a cross-built wheel goes untested.
+- **No mirrored iterators**: reading cell by cell from Python is slower than the bulk reads even over every cell,
+  and a second consumer of the terminal's dirty flags would defeat `frame()`'s reuse of unchanged rows.
 
 ## Risks
 
@@ -431,6 +461,8 @@ and only dependency-bot commits since May 2026.
   until [the upgrade](plans/upgrade-libghostty-vt.md) brings a limit in lines.
 - **libghostty-rs has two main contributors.** It's licensed MIT or Apache-2.0, so if it stalls, evp can fork it
   and keep it current with Ghostty's C API itself: about 20,000 lines to own, so the risk is work, not a dead end.
-- **Ghostty's build time in CI is unmeasured** until CI first runs.
-  Locally, on a 2-core VM, a cold build of Ghostty took about a minute for 0.2.2's commit
-  and 2 minutes 24 seconds (and 800 MB) for the newer one the first spike pinned.
+- **Ghostty's build makes CI slow.**
+  Cold, CI's debug build takes about 4 minutes on Linux, 3.5 to 5 on Windows and 7 on Intel macOS.
+  How much the cache saves is unmeasured until a run finds it warm.
+  The newer Ghostty the first spike pinned took more than twice as long as 0.2.2's to build locally,
+  so the upgrade will slow it further.
