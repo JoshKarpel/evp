@@ -19,7 +19,7 @@ jobs:
       matrix:
         # macos-15, not macos-latest: on macOS 26, Zig 0.15.2 (Ghostty's, for libghostty-vt 0.2.2) can't link
         # its own build runner against libSystem. A Ghostty that takes a newer Zig can move to macos-latest.
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, windows-latest]
         python-version: ["3.13", "3.14", "3.15"]
 
     runs-on: ${{ matrix.os }}

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased](https://github.com/JoshKarpel/evp/compare/v0.1.0...HEAD)
 
+### Removed
+
+- Wheels for x86_64 (Intel) macOS. On Intel macOS, pip builds evp from the sdist,
+  which needs Rust and Ghostty's Zig.
+
 ## [0.1.0](https://github.com/JoshKarpel/evp/commits/v0.1.0) - 2026-10-25
 
 ### Added
