@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use libghostty_vt::style::{Palette, RgbColor};
-use libghostty_vt::terminal::{Mode, ModeKind};
+use libghostty_vt::terminal::{Mode, ModeKind, Options};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -53,24 +53,22 @@ fn rgb((r, g, b): (u8, u8, u8)) -> RgbColor {
 #[pymethods]
 impl Terminal {
     #[new]
-    #[pyo3(signature = (columns, rows, *, scrollback_lines = 0, on_write_pty = None))]
+    #[pyo3(signature = (columns, rows, *, max_scrollback_bytes = 0, on_write_pty = None))]
     fn new(
         columns: u16,
         rows: u16,
-        scrollback_lines: usize,
+        max_scrollback_bytes: usize,
         on_write_pty: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
-        let mut terminal = libghostty_vt::Terminal::new(columns, rows).map_err(ghostty_error)?;
-        terminal
-            .set_scrollback_max_lines(Some(scrollback_lines))
-            .map_err(ghostty_error)?;
-        if scrollback_lines > 0 {
-            // libghostty also caps its scrollback at a few hundred rows' worth of bytes by default,
-            // so lift that and let the line limit bound it.
-            terminal
-                .set_scrollback_max_bytes(None)
-                .map_err(ghostty_error)?;
-        }
+        // libghostty-rs documents `max_scrollback` as lines, but this Ghostty treats it as bytes,
+        // and frees scrollback a page (a few hundred KB) at a time, so it keeps at least a page or
+        // two whenever it's above zero. Plain text takes about 10 bytes a cell.
+        let mut terminal = libghostty_vt::Terminal::new(Options {
+            cols: columns,
+            rows,
+            max_scrollback: max_scrollback_bytes,
+        })
+        .map_err(ghostty_error)?;
         let raised = Arc::new(Mutex::new(None));
         if let Some(callback) = on_write_pty {
             let raised = Arc::clone(&raised);

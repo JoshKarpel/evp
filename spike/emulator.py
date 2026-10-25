@@ -1,19 +1,21 @@
 """
-A prototype of counterweight's `Emulator.snapshot` on evp, for the spike's measurements.
+A prototype of counterweight's `Emulator` on evp, for the spike's measurements.
 
-It returns the same `Screen` as counterweight's pyghostty-based `Emulator` for a terminal with no scrollback,
-reusing counterweight's own conversions (`cells_for`, `cell_style`, the palette rules),
-so its time per snapshot is what `counterweight.emulator` would take on evp.
-Scrollback (`scrolled_off`, `history`) waits for evp's `scrolled_off`, which the spike doesn't build.
+It has `Emulator`'s whole API and returns the same values, reusing counterweight's own conversions
+(`cells_for`, `cell_style`, the palette rules), so counterweight's `tests/test_emulator.py` can run against it
+and its time per snapshot is what `counterweight.emulator` would take on evp.
 """
 
 from collections.abc import Callable
+from types import TracebackType
+from typing import Self
 
-from counterweight.elements import StyledGrapheme
+from counterweight.elements import Rows, StyledGrapheme
 from counterweight.emulator import (
     BLACK,
     DEFAULT_PALETTE_BYTES,
     INDEXED_COLORS,
+    MAX_SCROLLBACK,
     UNSTYLED,
     WHITE,
     Modes,
@@ -30,9 +32,29 @@ from evp import Frame, RenderState, Row, Style, Terminal
 
 type Line = tuple[StyledGrapheme, ...]
 
+# What a scrollback cell costs libghostty, generously: plain text takes about 10 bytes,
+# and styles and grapheme clusters take more of a page.
+SCROLLBACK_BYTES_PER_CELL = 32
+# libghostty frees its scrollback a page, a few hundred KB, at a time.
+SCROLLBACK_SLACK_BYTES = 2**21
+# The scrollback's bytes are fixed when the terminal is made, and a wider terminal fits fewer rows in them,
+# so budget for at least this many columns, for terminals that are resized wider.
+SCROLLBACK_MIN_COLUMNS = 256
+
+
+def scrollback_bytes(columns: int, rows: int, scrollback: int) -> int:
+    """
+    A byte budget for libghostty-vt 0.2.2's scrollback that holds at least `scrollback` rows,
+    which an emulator trims to exactly `scrollback` itself.
+    """
+    if not scrollback:
+        return 0
+    cells = (scrollback + rows) * max(columns, SCROLLBACK_MIN_COLUMNS)
+    return cells * SCROLLBACK_BYTES_PER_CELL + SCROLLBACK_SLACK_BYTES
+
 
 class EvpEmulator:
-    """counterweight's `Emulator`, as far as `snapshot` goes, on evp."""
+    """counterweight's `Emulator`, on evp."""
 
     def __init__(
         self,
@@ -41,8 +63,19 @@ class EvpEmulator:
         on_reply: Callable[[bytes], None],
         foreground: Color = WHITE,
         background: Color = BLACK,
+        scrollback: int = 0,
     ) -> None:
-        self.terminal = Terminal(columns, rows, on_write_pty=on_reply)
+        if not 0 <= scrollback <= MAX_SCROLLBACK:
+            raise ValueError(
+                f"An emulator's scrollback must be from 0 to {MAX_SCROLLBACK:_}, but got {scrollback:_}"
+            )
+        self.scrollback = scrollback
+        self.terminal = Terminal(
+            columns,
+            rows,
+            max_scrollback_bytes=scrollback_bytes(columns, rows, scrollback),
+            on_write_pty=on_reply,
+        )
         self.terminal.set_default_palette(DEFAULT_PALETTE_BYTES)
         self.terminal.set_default_colors(
             (foreground.red, foreground.green, foreground.blue),
@@ -59,25 +92,48 @@ class EvpEmulator:
         # Each row's cells, by the `Row` evp handed back, which is the same object while the row is unchanged.
         self.lines: dict[Row, Line] = {}
         self.last: Screen | None = None
+        # The rows that scrolled off the screen that `scrolled_off` hasn't returned yet, oldest first.
+        self.pending: list[Line] = []
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """evp frees the terminal when its last reference goes, so there's nothing to free early."""
 
     def feed(self, data: bytes) -> None:
         self.terminal.feed(data)
 
+    def resize(self, columns: int, rows: int) -> None:
+        self.terminal.resize(columns, rows)
+
+    def set_default_colors(self, foreground: Color, background: Color) -> None:
+        self.terminal.set_default_colors(
+            (foreground.red, foreground.green, foreground.blue),
+            (background.red, background.green, background.blue),
+        )
+
     def snapshot(self) -> Screen:
         frame = self.state.frame()
-        self.styles.extend(frame.new_styles)
         self.update_colors(frame)
-        cell_styles = self.cell_styles
-        for style in self.styles[len(cell_styles) :]:
-            # evp's first style is that of a cell with no styling, which counterweight leaves entirely unset.
-            cell_styles.append(self.cell_style(style) if cell_styles else UNSTYLED)
+        self.add_styles(frame.new_styles)
+        # Set the rows that scrolled off aside now, as counterweight does, before the scrollback can free them.
+        self.set_aside_scrolled_off()
 
         previous = self.lines
         lines: dict[Row, Line] = {}
         for row in frame.rows:
             line = previous.get(row)
             if line is None:
-                line = convert_row(row, cell_styles)
+                line = convert_row(row, self.cell_styles)
             lines[row] = line
         self.lines = lines
 
@@ -98,6 +154,36 @@ class EvpEmulator:
             return self.last
         self.last = screen
         return screen
+
+    def scrolled_off(self) -> Rows:
+        self.set_aside_scrolled_off()
+        scrolled_off = tuple(self.pending)
+        self.pending = []
+        return scrolled_off
+
+    def history(self) -> Rows:
+        if not self.scrollback:
+            return ()
+        self.set_aside_scrolled_off()
+        history = self.state.history()
+        self.add_styles(history.new_styles)
+        return tuple(convert_row(row, self.cell_styles) for row in history.rows[-self.scrollback :])
+
+    def set_aside_scrolled_off(self) -> None:
+        if not self.scrollback:
+            return
+        scrolled_off = self.state.scrolled_off()
+        self.add_styles(scrolled_off.new_styles)
+        self.pending.extend(convert_row(row, self.cell_styles) for row in scrolled_off.rows)
+        del self.pending[: -self.scrollback]
+
+    def add_styles(self, styles: tuple[Style, ...]) -> None:
+        """Take the styles evp delivered, and convert every style not yet converted for the current colors."""
+        self.styles.extend(styles)
+        cell_styles = self.cell_styles
+        for style in self.styles[len(cell_styles) :]:
+            # evp's first style is that of a cell with no styling, which counterweight leaves entirely unset.
+            cell_styles.append(self.cell_style(style) if cell_styles else UNSTYLED)
 
     def update_colors(self, frame: Frame) -> None:
         """Start converting styles and rows over when the default colors or the palette changed, which they name."""
@@ -166,9 +252,20 @@ class EvpEmulator:
 
 
 def convert_row(row: Row, cell_styles: list[CellStyle]) -> Line:
-    """A row's cells in counterweight's terms. A column of width 0 follows a wide character, which drew it."""
+    """
+    A row's cells in counterweight's terms. A column of width 0 follows a wide character, which drew it.
+
+    A cell repeated in the row is the same objects wherever it recurs, which `cells_for`'s cache alone
+    doesn't promise once a row holds more distinct cells than it keeps.
+    """
     cells: list[StyledGrapheme] = []
-    for grapheme, width, index in zip(row.graphemes, row.widths, row.styles, strict=True):
-        if width:
-            cells.extend(cells_for(grapheme, width, cell_styles[index]))
+    seen: dict[tuple[str, int, int], Line] = {}
+    for key in zip(row.graphemes, row.widths, row.styles, strict=True):
+        grapheme, width, index = key
+        if not width:
+            continue
+        known = seen.get(key)
+        if known is None:
+            known = seen[key] = cells_for(grapheme, width, cell_styles[index])
+        cells.extend(known)
     return tuple(cells)

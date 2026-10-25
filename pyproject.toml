@@ -30,7 +30,7 @@ Issues = "https://github.com/JoshKarpel/evp/issues"
 exclude-newer = "7 days"
 
 [tool.maturin]
-features = ["pyo3/extension-module"]
+features = ["pyo3/extension-module", "abi3"]
 python-source = "python"
 module-name = "evp._evp"
 
@@ -47,8 +47,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# The spike's prototype reuses counterweight's code, which is 120 columns wide.
-"spike/*" = ["E501"]
+# The spike's prototype reuses counterweight's code and signatures, which run 120 columns wide.
+"spike/*" = ["E501", "PLR0913", "PLR0917"]
 
 [tool.mypy]
 strict = true
@@ -60,6 +60,9 @@ testpaths = ["tests"]
 [dependency-groups]
 dev = [
     "maturin>=1.12.0",
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.6.0",
+    "mkdocstrings[python]>=0.27.0",
     "mypy>=1.19.1",
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",

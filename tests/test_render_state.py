@@ -9,8 +9,12 @@ def text(row: Row) -> str:
     return "".join(row.graphemes).rstrip()
 
 
-def rendered(scrollback_lines: int = 0) -> tuple[Terminal, RenderState]:
-    terminal = Terminal(12, 4, scrollback_lines=scrollback_lines)
+# Enough for the scrollback to hold every row these tests write, and to free rows after many more.
+SCROLLBACK_BYTES = 1_000_000
+
+
+def rendered(max_scrollback_bytes: int = 0) -> tuple[Terminal, RenderState]:
+    terminal = Terminal(12, 4, max_scrollback_bytes=max_scrollback_bytes)
     return terminal, RenderState(terminal)
 
 
@@ -42,11 +46,14 @@ def test_frame_reads_a_wide_character_as_one_grapheme_two_columns_wide() -> None
     assert list(row.widths[:3]) == [2, 0, 1]
 
 
-def test_frame_reads_as_much_of_a_long_grapheme_cluster_as_libghostty_keeps() -> None:
+def test_frame_reads_a_long_grapheme_cluster_as_libghostty_keeps_it() -> None:
     terminal, state = rendered()
-    # libghostty keeps a cluster's first 65 codepoints and drops the rest.
-    terminal.feed(("e" + "́" * 200).encode())
-    assert state.frame().rows[0].graphemes[0] == "e" + "́" * 64
+    cluster = "e" + "\u0301" * 200
+    terminal.feed(cluster.encode())
+    read = state.frame().rows[0].graphemes[0]
+    # libghostty-vt 0.2.2's Ghostty keeps all of it; newer ones keep its first 65 codepoints.
+    assert len(read) >= 65
+    assert cluster.startswith(read)
 
 
 def test_frame_delivers_each_style_once_with_the_default_first() -> None:
@@ -77,24 +84,20 @@ def unchanged(before: Frame, after: Frame) -> list[bool]:
 
 def test_frame_returns_the_same_row_for_a_row_that_did_not_change() -> None:
     terminal, state = rendered()
-    terminal.feed(b"one\r\ntwo")
+    terminal.feed(b"one\r\ntwo\r\n")
     before = state.frame()
-    terminal.feed(b"\r\nthree")
+    terminal.feed(b"three")
     assert unchanged(before, state.frame()) == [True, True, False, True]
 
 
-@pytest.mark.parametrize("scrollback_lines", [0, 100])
-def test_frame_returns_the_same_rows_for_rows_a_scroll_moved(scrollback_lines: int) -> None:
-    terminal, state = rendered(scrollback_lines=scrollback_lines)
+@pytest.mark.parametrize("max_scrollback_bytes", [0, SCROLLBACK_BYTES])
+def test_frame_returns_the_same_rows_for_rows_a_scroll_moved(max_scrollback_bytes: int) -> None:
+    terminal, state = rendered(max_scrollback_bytes)
     terminal.feed(b"a\r\n\x1b[32mb\x1b[0m\r\nc\r\nd")
     before = state.frame()
     terminal.feed(b"\r\ne")
     after = state.frame()
-    assert [a is b for a, b in zip(before.rows[1:], after.rows[:3], strict=True)] == [
-        True,
-        True,
-        True,
-    ]
+    assert [a is b for a, b in zip(before.rows[1:], after.rows[:3], strict=True)] == [True] * 3
     assert text(after.rows[3]) == "e"
 
 
@@ -131,3 +134,94 @@ def test_frame_reports_the_palette_the_program_changed() -> None:
     terminal, state = rendered()
     terminal.feed(b"\x1b]4;1;rgb:11/22/33\x07")
     assert state.frame().palette[3:6] == bytes([0x11, 0x22, 0x33])
+
+
+def history_text(rows: tuple[Row, ...]) -> list[str]:
+    return [text(row) for row in rows]
+
+
+def test_scrolled_off_returns_the_rows_that_scrolled_off_since_the_render_state_was_made() -> None:
+    terminal, state = rendered(SCROLLBACK_BYTES)
+    terminal.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf")
+    scrolled = state.scrolled_off()
+    assert history_text(scrolled.rows) == ["a", "b"]
+    assert not scrolled.has_gap
+
+
+def test_scrolled_off_returns_each_row_once() -> None:
+    terminal, state = rendered(SCROLLBACK_BYTES)
+    terminal.feed(b"a\r\nb\r\nc\r\nd\r\ne")
+    state.scrolled_off()
+    assert state.scrolled_off().rows == ()
+    terminal.feed(b"\r\nf\r\ng")
+    assert history_text(state.scrolled_off().rows) == ["b", "c"]
+
+
+def test_scrolled_off_delivers_the_styles_its_rows_use() -> None:
+    terminal, state = rendered(SCROLLBACK_BYTES)
+    state.frame()
+    terminal.feed(b"\x1b[35ma\x1b[0m\r\nb\r\nc\r\nd\r\ne")
+    scrolled = state.scrolled_off()
+    (magenta,) = scrolled.new_styles
+    assert magenta.foreground == 5
+    assert scrolled.rows[0].styles[0] == 1
+
+
+def test_scrolled_off_reports_a_gap_when_the_scrollback_freed_rows_it_had_not_returned() -> None:
+    # A wide terminal fills the scrollback's pages in fewer rows.
+    terminal = Terminal(1000, 4, max_scrollback_bytes=1)
+    state = RenderState(terminal)
+    terminal.feed((b"x" * 999 + b"\r\n") * 2_000)
+    assert state.scrolled_off().has_gap
+
+
+def test_scrolled_off_reports_a_gap_when_the_program_erased_the_scrollback() -> None:
+    terminal, state = rendered(SCROLLBACK_BYTES)
+    terminal.feed(b"a\r\nb\r\nc\r\nd\r\ne")
+    state.scrolled_off()
+    terminal.feed(b"\r\nf\x1b[3J")
+    scrolled = state.scrolled_off()
+    assert scrolled.has_gap
+    assert scrolled.rows == ()
+
+
+def test_scrolled_off_misses_an_erase_of_rows_scrolled_since_it_found_the_scrollback_empty() -> (
+    None
+):
+    # A limit of libghostty-vt 0.2.2: the erase leaves no trace an anchor can see.
+    terminal, state = rendered(SCROLLBACK_BYTES)
+    terminal.feed(b"a\r\nb\r\nc\r\nd\r\ne\x1b[3J")
+    scrolled = state.scrolled_off()
+    assert not scrolled.has_gap
+    assert scrolled.rows == ()
+
+
+def test_scrolled_off_reports_a_gap_after_a_resize() -> None:
+    terminal, state = rendered(SCROLLBACK_BYTES)
+    terminal.feed(b"a\r\nb\r\nc\r\nd\r\ne")
+    terminal.resize(10, 4)
+    assert state.scrolled_off().has_gap
+    assert not state.scrolled_off().has_gap
+
+
+def test_scrolled_off_returns_nothing_from_the_alternate_screen() -> None:
+    terminal, state = rendered(SCROLLBACK_BYTES)
+    terminal.feed(b"\x1b[?1049h" + b"line\r\n" * 10)
+    assert state.scrolled_off().rows == ()
+    terminal.feed(b"\x1b[?1049l\x1b[4;1H\r\nafter")
+    assert len(state.scrolled_off().rows) == 1
+
+
+def test_history_returns_every_row_the_scrollback_holds() -> None:
+    terminal, state = rendered(SCROLLBACK_BYTES)
+    terminal.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf")
+    state.scrolled_off()
+    assert history_text(state.history().rows) == ["a", "b"]
+
+
+def test_history_reads_wide_characters_and_grapheme_clusters() -> None:
+    terminal, state = rendered(SCROLLBACK_BYTES)
+    terminal.feed("日e\u0301\r\n\r\n\r\n\r\n".encode())
+    row = state.history().rows[0]
+    assert row.graphemes[:3] == ("日", "", "e\u0301")
+    assert list(row.widths[:3]) == [2, 0, 1]

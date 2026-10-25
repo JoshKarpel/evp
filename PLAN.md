@@ -102,7 +102,7 @@ It has two layers, as waxy does.
   and returns what the loop would have, so it's never the only way to get something.
 
 ```python
-terminal = Terminal(columns=120, rows=40, scrollback_lines=10_000, on_write_pty=pty.write)
+terminal = Terminal(columns=120, rows=40, max_scrollback_bytes=10_000_000, on_write_pty=pty.write)
 terminal.feed(output)
 terminal.resize(columns=100, rows=30)
 
@@ -130,7 +130,7 @@ The first release covers what embedding a terminal needs:
 | Area | libghostty-vt | Low level | Fast helpers |
 | --- | --- | --- | --- |
 | The terminal | `terminal.h`, `modes.h`, `device.h`: write, resize, reset, scroll the viewport, options and callbacks (replies to the program, title, working directory, clipboard, bell, unknown sequences) | `Terminal` | |
-| Reading the screen | `render.h`, `screen.h`, `style.h`, `color.h`: render state, dirty rows with stable ids, cells, styles, the palette, overscan into the scrollback | `RenderState`, its row and cell iterators, `Style`, `Color` | `RenderState.frame()`, `RenderState.scrolled_off()` |
+| Reading the screen | `render.h`, `screen.h`, `style.h`, `color.h`: render state, dirty rows, cells, styles, the palette, grid references into the scrollback | `RenderState`, its row and cell iterators, `Style`, `Color` | `RenderState.frame()`, `RenderState.scrolled_off()`, `RenderState.history()` |
 | Input to the program | `key/`, `mouse/`, `focus.h`, `paste.h`, `size_report.h`, `modes.h`, `color_scheme.h` encoders | `KeyEncoder`, `MouseEncoder`, `encode_focus`, `encode_paste`, ... | |
 | Text out | `formatter.h`: the terminal's contents as plain text or VT | `Formatter` | |
 | Widths | `unicode.h`: a codepoint's and a grapheme's width, as libghostty measures them | `codepoint_width`, `grapheme_width` | |
@@ -144,19 +144,20 @@ and kitty graphics (`kitty_graphics.h`), which counterweight's [#441](https://gi
 **The screen helpers are what replaces `emulator.py`'s cffi loops:**
 
 - **`frame()` returns `Row` values, and an unchanged row is the same object.**
-  evp keeps each row it read by libghostty's row id, and hands back the same `Row` for it while the row is unchanged,
+  evp keeps the last frame's rows, and hands back the same `Row` for a row that shows the same cells,
   so a consumer that keeps derived data by row (`Emulator` shares unchanged rows by identity) skips them for free.
-  The dirty flag alone can't say "unchanged", since a scroll marks every row dirty,
+  A row libghostty doesn't mark dirty is unchanged at the same position.
+  The dirty flag alone can't say more, since a scroll marks every row dirty,
   and the scroll is the case this plan exists to make fast.
-  A row's id follows its content through a scroll, with or without scrollback, and through a rewrite in place,
-  so `frame()` also reuses a dirty row's `Row` when its raw cells match the ones it read,
-  and a scroll reads only the rows that are new.
-  Equal raw cells aren't enough on their own, and the spike's tests reproduce both of these:
+  So `frame()` reads a dirty row's raw cells and looks for a row of the last frame with the same ones,
+  which finds every row a scroll moved, scroll regions included,
+  and a comparison usually stops at the first cell, so trying every row is cheap.
+  Equal raw cells aren't enough on their own, and the tests reproduce both of these:
   libghostty reuses a freed style id within a page, so `frame()` reads each of the row's style ids' styles again,
   and a cell's codepoints after its first live outside its raw value,
   so a row holding a multi-codepoint grapheme cluster is always read again.
-  A scroll region gives every row on its page a new id, rows outside the region included,
-  so a program that scrolls a region has every row read again.
+  libghostty-vt 0.2.2 reads raw cells only one at a time;
+  [plans/upgrade-libghostty-vt.md](plans/upgrade-libghostty-vt.md) covers the release that reads a row's in one call.
 - **A row's cells come back as parallel sequences**, its grapheme clusters as `str`s, their widths, and their style indices,
   one entry per column, so a row of 120 cells is a handful of objects, not 120.
   A wide character's second column is an empty grapheme of width 0.
@@ -164,12 +165,19 @@ and kitty graphics (`kitty_graphics.h`), which counterweight's [#441](https://gi
   carrying the styles added since the last of either, so a style always arrives no later than the first row that uses it.
   libghostty's style ids mean something only within a page, so the helper interns styles itself, terminal-wide,
   and a consumer converts each style once, by index.
-- **`scrolled_off()` returns the rows that scrolled into the scrollback since the last call**, captured natively,
-  so the doubling search `emulator.py` does to keep capturing affordable moves into evp.
-  Its result's `has_gap` is true when rows were lost since the last call:
-  more scrolled off than the scrollback holds, the program cleared the scrollback (`ESC[3J`), or a resize reflowed it.
+- **`scrolled_off()` returns the rows that scrolled into the scrollback since the last call**, read natively,
+  so the doubling search `emulator.py` does to keep capturing affordable goes away.
+  It keeps a tracked grid reference on the row at the top of the screen at its last call,
+  which follows that row into the scrollback, so its position there counts the rows that scrolled off since,
+  and reads those rows through grid references.
+  Its result's `has_gap` is true when rows may have been lost since the last call:
+  the scrollback freed the anchor's row to make room, the program cleared the scrollback (`ESC[3J`),
+  or a resize rewrapped it.
   A consumer keeping its own history then knows to mark the gap or rebuild.
   It's a flag, not an exception, because a gap is the program's doing, not a mistake by evp's caller.
+  On 0.2.2 an erase is caught only when the last call found rows in the scrollback,
+  since after an erase the anchor lands back at the top of the screen.
+  `history()` reads the whole scrollback the same way, for a consumer that looks now and then.
 - **A terminal has at most one `RenderState`.**
   libghostty lets a second render state take the first's dirty flags,
   which would make `frame()` hand back cached rows whose content changed.
@@ -227,12 +235,11 @@ with no `unsafe` of its own beyond direct calls into `libghostty-vt-sys` for wha
 (in 0.2.2, `size_report.h`'s encoder, which the first release lists),
 so raw pointer mistakes like `convert_row`'s overrun can't happen outside those calls,
 and a fast helper's loop runs over the same safe types, at native speed.
-Its `master` exposes what the screen helpers need: overscan, `next_dirty`, a row's `id`, `dirty` and `viewport_y`,
-`cells_raw`, and a cell's `style` and `graphemes`.
-The newest release, 0.2.2, has only a row's `dirty` and a cell's `style` and `graphemes`,
-so evp builds on a git pin of `master` until libghostty-rs's next release,
-at the newest commit outside the cooldown (`d2036ba`, from 2026-10-09, whose Ghostty needs Zig 0.16),
-and evp's first release waits for that one rather than releasing on the git pin.
+evp builds on its newest release, 0.2.2, rather than a git pin of `master`,
+so its first release needn't wait for libghostty-rs's next one.
+0.2.2 lacks some of what the screen helpers would rather build on (a row's raw cells in one call, row ids,
+overscan, a scrollback limit in lines), and evp works around each:
+[plans/upgrade-libghostty-vt.md](plans/upgrade-libghostty-vt.md) lists them, what they cost, and what upgrading gains.
 What this costs: two toolchains to build evp (Rust and Zig),
 dependence on libghostty-rs's cadence for new Ghostty commits and for wrapping new C APIs
 (or overriding its source with `GHOSTTY_SOURCE_DIR`, and calling `libghostty-vt-sys` directly for what isn't wrapped yet),
@@ -247,7 +254,7 @@ Revisit pydust if it supports Ghostty's Zig version; evp's Python API wouldn't c
   so aarch64 Linux and x86_64 macOS are targets waxy doesn't have.
   Each needs Ghostty built for that target.
   `libghostty-vt-sys` cross-compiles: maturin with `--zig` builds an aarch64 Linux wheel on an x86_64 host,
-  tagged `manylinux_2_17`, in about 3 minutes 50 seconds cold.
+  tagged `manylinux_2_17`, in about 3 minutes 50 seconds cold (on the first spike's newer Ghostty).
   But a cross-built wheel can't be tested where it's built, and GitHub has a native runner for every target
   (`ubuntu-24.04-arm`, `macos-15-intel`), so each target builds and tests on its own runner,
   and cross-compiling is the way out if a runner goes away.
@@ -258,15 +265,14 @@ Revisit pydust if it supports Ghostty's Zig version; evp's Python API wouldn't c
 - **One wheel per platform, through the limited API.**
   PyO3's `abi3` feature builds one wheel for every Python from the oldest it names;
   waxy instead builds one per Python version.
-  Built with `abi3`, `frame()` takes 7 to 22% longer (0.1 to 2.6 µs a frame),
-  and the counterweight prototype 1 to 7% longer, since its own Python work dominates.
+  Built with `abi3`, `frame()` takes 4 to 18% longer (at most 6 µs a frame),
+  and the counterweight prototype 1 to 13% longer, since its own Python work dominates.
   That buys one wheel per platform instead of three, and wheels for Pythons not yet released.
   What it costs: those microseconds, and no wheel for free-threaded CPython, which can't load an `abi3` wheel.
 - **Zig wherever evp is built**, from mise, pinned in `mise.toml`,
   at the version the Ghostty commit pinned by libghostty-rs requires.
   That's 0.15.2 for `libghostty-vt` 0.2.2, the newest release (its Ghostty is `a887df42`),
-  0.16.0 for the `master` commit evp pins, and 0.17.0 for `master` since 2026-10-23,
-  so a libghostty-rs bump can bring a Zig bump with it.
+  and 0.17.0 for libghostty-rs's `master`, so a libghostty-rs bump can bring a Zig bump with it.
   `libghostty-vt-sys` runs `zig` from `PATH` unless its `ZIG` variable names another.
   evp has no Zig of its own and no Ghostty build logic, but `libghostty-vt-sys` has no prebuilt library:
   its `build.rs` clones Ghostty at its pinned commit and runs `zig build` (or builds a local checkout named by `GHOSTTY_SOURCE_DIR`).
@@ -291,10 +297,9 @@ What evp adds is mostly Zig on every runner that compiles, and a cache for Ghost
 - **CI** (`.github/workflows/ci.yml`): on pushes to `main`, pull requests, and by hand.
   A matrix of Linux, macOS and Windows by each supported Python
   runs `just fix` (pre-commit over every file) and `just test` (mypy, pytest, and `cargo test`, with `-D warnings`),
-  and caches Cargo's target directory, since every cell otherwise builds Ghostty from a clean clone;
-  the spike's measurement of that build says how much the cache matters.
+  and caches Cargo's target directory, since every cell otherwise builds Ghostty from a clean clone.
 - **Release** (`.github/workflows/release.yml`): on a published GitHub release,
-  builds a wheel per platform (and per Python, unless `abi3` wins) with `PyO3/maturin-action`, and an sdist,
+  builds an `abi3` wheel per platform with `PyO3/maturin-action`, and an sdist,
   then publishes them with `pypa/gh-action-pypi-publish` through
   [trusted publishing](https://docs.pypi.org/trusted-publishers/):
   only the publish job grants `id-token: write`, it runs in a `pypi` environment, and no API token exists.
@@ -325,6 +330,7 @@ What evp adds is mostly Zig on every runner that compiles, and a cache for Ghost
   `MISE_INSTALL_MUSL=1` matters: mise's default Linux build needs glibc 2.18, and `manylinux2014` has 2.17.
   `MISE_VERSION` pins mise itself, which the installer otherwise takes from whatever was released last, outside any cooldown.
 - **Docs** (`.github/workflows/docs.yml`): builds the extension and an mkdocs site with `--strict`,
+  as waxy's does (a home page, the API reference from the stub's docstrings, a changelog, and maintaining notes),
   and deploys it to GitHub Pages on pushes to `main`.
 - **Dependabot** for GitHub Actions, weekly.
 - **pre-commit**: `pre-commit-hooks`, `check-jsonschema`'s workflow and Dependabot checks,
@@ -344,18 +350,15 @@ one here and one there, with a release of evp between them.
 
 Steps 1 to 3 happen in this repository; steps 4 and 5 in counterweight.
 
-1. **Spike** (decides the open questions below):
-   a PyO3 module on `libghostty-vt` from a git pin of libghostty-rs's `master`, with `Terminal.feed` and a bulk `snapshot`,
-   built on Linux, macOS and Windows by the CI workflow (see [What does the repository need?](#what-does-the-repository-need)).
-   Measure import plus the first terminal (target: a few milliseconds, against 190 ms),
-   counterweight's `benchmarks snapshot` scenarios against today's,
-   `abi3` against a per-version build, and how long a clean build of Ghostty takes in CI, with and without the cache.
-   Find out whether a row's id follows its content through a scroll, and through a rewrite of the row in place
-   (see [The binding's API](#the-bindings-api)).
-   Check whether `libghostty-vt-sys` cross-compiles to the wheel targets,
-   and whether pydust supports Zig 0.17 by then.
-2. **The rest of the scaffolding**: the release and docs workflows, Dependabot, pre-commit and the justfile,
-   and the pending publisher on PyPI.
+1. **Spike** (done; see [What did the spike find?](#what-did-the-spike-find)):
+   a PyO3 module on `libghostty-vt` with `Terminal`, `RenderState.frame()`, `scrolled_off()` and `history()`,
+   its tests, stubs and docs, and the CI and docs workflows (see [What does the repository need?](#what-does-the-repository-need)).
+   It measured startup, counterweight's `benchmarks snapshot` scenarios against today's, and `abi3` against a per-version build,
+   ran counterweight's emulator tests against a prototype `Emulator` on it,
+   and checked how libghostty's rows behave through a scroll, whether `libghostty-vt-sys` cross-compiles,
+   and whether pydust supports Ghostty's Zig.
+   Still to measure, once CI runs: how long a clean build of Ghostty takes there, with and without the cache.
+2. **The rest of the scaffolding**: the release workflow, Dependabot, and the pending publisher on PyPI.
    A pre-release published to PyPI from a GitHub release proves the release workflow end to end.
 3. **evp**: the first release's areas (see [The binding's API](#the-bindings-api)),
    tests of its own, stubs, and docs.
@@ -370,48 +373,60 @@ Steps 1 to 3 happen in this repository; steps 4 and 5 in counterweight.
 
 ## What did the spike find?
 
-The spike is a PyO3 module on the pinned `libghostty-vt` with `Terminal` (`feed`, `resize`, modes, title, colors)
-and `RenderState.frame()`, the screen helper described above, without overscan or `scrolled_off()`.
-`spike/emulator.py` is counterweight's `Emulator.snapshot` rebuilt on it, reusing counterweight's own conversions,
-and `spike/bench.py` checks that it returns the same rows, cursor and modes as counterweight's `Emulator`
-after every scenario of counterweight's `benchmarks snapshot`, then times both the way that benchmark does.
+`spike/emulator.py` is counterweight's `Emulator` rebuilt on evp, reusing counterweight's own conversions.
+Every behavior test in counterweight's `tests/test_emulator.py` passes against it (`spike/counterweight-tests.sh`);
+the one that fails inspects counterweight's overscan internals, which step 4 deletes.
+`spike/bench.py` checks that it returns the same rows, cursor, modes and scrolled-off rows as counterweight's `Emulator`,
+then times both the way counterweight's `benchmarks snapshot` does.
+counterweight's scenarios scroll identical lines, which flatters finding moved rows by their cells,
+so it adds lines that each differ from the last, with and without a 10,000-row scrollback.
 Best times per snapshot of a 120×40 screen, on a 2-core VM, with a per-version build:
 
 | After | pyghostty µs | evp prototype µs | evp `frame()` alone µs |
 | --- | --- | --- | --- |
-| nothing | 65 | 10 | 1.5 |
-| a progress bar rewriting its row | 75 | 10 | 1.7 |
-| a plain line, scrolling | 445 | 51 | 11 |
-| a line of wide characters, scrolling | 522 | 48 | 12 |
-| a line with every word colored, scrolling | 3,637 | 73 | 29 |
+| nothing | 66 | 12 | 2.8 |
+| a progress bar rewriting its row | 75 | 13 | 4.3 |
+| a plain line, scrolling | 444 | 52 | 42 |
+| a line of wide characters, scrolling | 515 | 52 | 42 |
+| a line with every word colored, scrolling | 3,638 | 82 | 71 |
+| a different line each time, scrolling | 427 | 75 | 48 |
+| the same, with a 10,000-row scrollback | 494 | 100 | |
 
-The colored scroll falls fiftyfold because `frame()` reuses the rows that only moved,
+A scroll costs between a fifth and a fortieth of what it does now, because `frame()` reuses the rows that only moved,
 and converts each style once rather than once per row.
-What remains of the prototype's time is Python: a dict lookup per row, and `cells_for` for the new row's cells.
+Most of `frame()`'s time on a scroll is reading each row's raw cells a call at a time to find the moved ones;
+a first spike on libghostty-rs's `master`, which reads a row's in one call, took a quarter to a half as long,
+for little difference through the prototype ([plans/upgrade-libghostty-vt.md](plans/upgrade-libghostty-vt.md)).
 
 Startup, the best of seven fresh processes:
-importing evp takes 0.4 ms, and a terminal with its render state another 0.03 ms.
-Making counterweight's first `Emulator` takes 173 ms, the cffi parsing [Why own the binding?](#why-own-the-binding) traces.
+importing evp takes 0.4 ms, and a terminal with its render state another 0.04 ms.
+Making counterweight's first `Emulator` takes 164 ms, the cffi parsing [Why own the binding?](#why-own-the-binding) traces.
+
+How libghostty's rows behave is pinned by tests:
+a rewritten row leaves the rows around it clean, a scroll marks every row dirty,
+and a tracked grid reference follows its row into the scrollback and loses its value when the scrollback frees that row.
 
 The cross-compile check and the measurement of `abi3` are under [How is it built and released?](#how-is-it-built-and-released).
 ziggy-pydust still supports only Zig 0.15 on its default branch, with no release since September 2025,
 and only dependency-bot commits since May 2026.
 
-The CI workflow builds and tests on Linux (x86_64 and arm64), macOS (arm64 and x86_64) and Windows,
-for Python 3.13 to 3.15, but hasn't run yet, so Ghostty's build time in CI, with and without the cache, is still unmeasured.
-
 ## Decisions
 
 - **Language: Rust**, on libghostty-rs. ziggy-pydust doesn't support Ghostty's Zig.
+- **libghostty-vt 0.2.2**, the newest release, rather than a git pin of `master`,
+  so evp can release now. It costs the workarounds [plans/upgrade-libghostty-vt.md](plans/upgrade-libghostty-vt.md) lists,
+  chiefly a scrollback limit in bytes rather than lines.
 - **`abi3`**: one wheel per platform, for a few microseconds a frame.
 - **A native runner per wheel target**, since `libghostty-vt-sys` cross-compiles but a cross-built wheel goes untested.
 
 ## Risks
 
 - **libghostty-vt's C API is pre-1.0**, so new Ghostty commits can change it; the pin is what contains that.
-- **evp's first release waits on libghostty-rs's next one**, which has no date;
-  the spike and step 3's work run on a git pin of `master`, but evp doesn't release on one.
+- **0.2.2's scrollback limit is in bytes**, fixed when a terminal is made and freed a page at a time,
+  so a consumer that wants a number of lines (as counterweight does) budgets bytes with headroom and trims itself,
+  until [the upgrade](plans/upgrade-libghostty-vt.md) brings a limit in lines.
 - **libghostty-rs has two main contributors.** It's licensed MIT or Apache-2.0, so if it stalls, evp can fork it
   and keep it current with Ghostty's C API itself: about 20,000 lines to own, so the risk is work, not a dead end.
 - **Ghostty's build time in CI is unmeasured** until CI first runs.
-  Locally, a cold build of the pinned Ghostty takes 2 minutes 24 seconds and 800 MB on a 2-core VM.
+  Locally, on a 2-core VM, a cold build of Ghostty took about a minute for 0.2.2's commit
+  and 2 minutes 24 seconds (and 800 MB) for the newer one the first spike pinned.

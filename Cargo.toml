@@ -15,10 +15,9 @@ all = { level = "deny", priority = -1 }
 abi3 = ["pyo3/abi3-py313"]
 
 [dependencies]
-# A git pin of master until libghostty-rs releases the render state's row ids and overscan
-# (0.2.2 has neither). Its build.rs clones and builds the Ghostty commit it pins, with the
-# `zig` on PATH, so a bump here can need a Zig bump in mise.toml.
-libghostty-vt = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "d2036baeb605d31d09a9e2ba6d0c923e04c34d54" }
+# libghostty-vt-sys's build.rs clones and builds the Ghostty commit it pins, with the `zig` on PATH,
+# so a bump here can need a Zig bump in mise.toml. plans/upgrade-libghostty-vt.md covers the next one.
+libghostty-vt = "0.2.2"
 pyo3 = { version = "0.30", features = ["extension-module"] }
 rustc-hash = "2.1.3"
 

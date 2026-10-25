@@ -73,6 +73,22 @@ rs-lint:
 rs-upgrade:
     cargo update
 
+# Docs
+
+[doc("Build docs")]
+[group("docs")]
+docs-build: build
+    uv run mkdocs build --strict
+
+alias db := docs-build
+
+[doc("Serve docs dev server")]
+[group("docs")]
+docs-serve: build
+    uv run mkdocs serve --strict
+
+alias ds := docs-serve
+
 # Combined
 
 [doc("Run all tests")]
@@ -98,8 +114,8 @@ fix:
 
 alias f := fix
 
-[doc("Run all checks (formatting, linting, type-checking, testing)")]
-check: fix test
+[doc("Run all checks (formatting, linting, type-checking, testing, docs)")]
+check: fix test docs-build
 
 alias c := check
 
