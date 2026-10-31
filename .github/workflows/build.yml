@@ -46,7 +46,7 @@ jobs:
 
       # Zig and Rust for the macOS and Windows builds, which run on the runner, and uv for testing the wheel.
       - name: Install tools
-        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca  # v5.1.1
+        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d  # v5.2.4
         with:
           version: 2026.10.12
           cache: false
